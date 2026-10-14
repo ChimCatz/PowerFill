@@ -80,7 +80,6 @@ body {
   background: linear-gradient(90deg, var(--accent) 0 60%, var(--orange) 60% 100%);
 }
 
-.top img { border-radius: 5px; }
 main { padding: 12px; }
 /* The sheet uses all the width it is given; lists of cards stop growing at a readable width. */
 #view[data-view="home"], #view[data-view="details"] { max-width: 760px; margin-inline: auto; }

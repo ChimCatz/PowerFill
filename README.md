@@ -1,8 +1,6 @@
 <div align="center">
 
-<img src="extension/icons/icon128.png" alt="PowerFill icon" width="96" height="96">
-
-# PowerFill
+<h1><img src="docs/logo/powerfill-wordmark.png" alt="PowerFill" width="360"></h1>
 
 **Scan a form once. Fill it in one click, every time after.**
 

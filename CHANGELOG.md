@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.2.1 (2026-10-14)
+
+- New logo: an orange P with a lightning bolt. It is the toolbar and extension icon, the mark in the panel header, and the README banner. Source files are in `docs/logo/`.
+
 ## 1.2.0 (2026-10-14)
 
 From the team's first round of testing.
