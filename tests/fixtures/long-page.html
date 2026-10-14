@@ -1,0 +1,63 @@
+<!doctype html>
+<!-- A page whose fields are not all there at first, for testing the scrolling scan.
+     Add ?endless to make it grow for ever, like a social feed. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Long page</title>
+<style>
+  body { margin: 0; padding: 20px; font: 14px system-ui, sans-serif; }
+  label { display: block; margin: 8px 0; }
+  .gap { height: 1600px; background: linear-gradient(#f6f6f6, #e3e9f2); }
+  .reveal { opacity: 0; transition: opacity .2s; }
+  .reveal.in { opacity: 1; }
+  #pane { height: 300px; overflow: auto; border: 1px solid #ccc; }
+  #pane .tall { height: 900px; }
+  #lazy, #feed { min-height: 1px; }
+</style>
+</head>
+<body>
+<label>Top name <input name="top_name"></label>
+<label>Top email <input name="top_email" type="email"></label>
+
+<!-- A pane that scrolls on its own and adds a field when its bottom is reached. -->
+<div id="pane"><label>Pane first <input name="pane_first"></label><div class="tall"></div><div id="paneEnd"></div></div>
+<div class="gap"></div>
+
+<!-- Fades in when scrolled into view, the way many marketing pages animate their sections. -->
+<section class="reveal" id="revealed">
+  <label>Revealed city <input name="city"></label>
+  <label>Revealed plan <select name="plan"><option value="">Choose</option><option>Basic</option><option>Pro</option></select></label>
+</section>
+<div class="gap"></div>
+
+<!-- Not in the page at all until it is scrolled to. -->
+<div id="lazy"></div>
+<div id="feed"></div>
+
+<script>
+  const endless = new URLSearchParams(location.search).has('endless');
+  const whenSeen = (el, fn) => {
+    const watcher = new IntersectionObserver((entries) => { if (entries.some((e) => e.isIntersecting)) { watcher.disconnect(); fn(); } });
+    watcher.observe(el);
+  };
+  whenSeen(revealed, () => revealed.classList.add('in'));
+  whenSeen(lazy, () => { lazy.innerHTML = '<label>Lazy phone <input name="lazy_phone"></label><label>Lazy notes <textarea name="lazy_notes"></textarea></label>'; });
+  pane.addEventListener('scroll', () => {
+    if (pane.scrollTop + pane.clientHeight > pane.scrollHeight - 50 && !pane.querySelector('[name=pane_last]')) paneEnd.innerHTML = '<label>Pane last <input name="pane_last"></label>';
+  });
+  if (endless) {
+    let count = 0;
+    const more = () => {
+      const block = document.createElement('div');
+      block.innerHTML = '<div style="height:1000px"></div><label>Feed item ' + (++count) + ' <input name="feed' + count + '"></label>';
+      const sentinel = document.createElement('div');
+      sentinel.style.minHeight = '1px';
+      feed.append(block, sentinel);
+      whenSeen(sentinel, more);
+    };
+    whenSeen(feed, more);
+  }
+</script>
+</body>
+</html>

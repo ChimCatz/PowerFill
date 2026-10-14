@@ -10,6 +10,7 @@ import { listVars, saveVars } from '../lib/store.js';
 async function showDetails() {
   const from = state.view === 'details' ? 'home' : state.view;
   state.view = 'details';
+  $('#view').dataset.view = 'details';
   state.vars = await listVars();
   if (!state.vars.length) state.vars = [{ key: 'name', value: '' }, { key: 'email', value: '' }, { key: 'phone', value: '' }];
   render(from);

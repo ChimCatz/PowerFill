@@ -342,16 +342,32 @@
     return field;
   }
 
-  function scan({ includeHidden } = {}) {
+  const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const SCROLL_TIME_LIMIT = 20000;   // ms a scrolling scan may run in one frame
+
+  // With `scroll`, the page is scrolled from top to bottom first, so fields that are only loaded
+  // or revealed when they come into view are found as well. See scrollThrough for the safeguards.
+  async function scan({ includeHidden, scroll } = {}) {
     const seen = new Set();
-    const fields = [];
-    for (const el of deepAll(document, CANDIDATES)) {
-      if (seen.has(el) || !isField(el) || el.parentElement?.isContentEditable) continue;
-      const members = groupOf(el);
-      members.forEach((m) => seen.add(m));
-      if (!includeHidden && !members.some(isVisible)) continue;
-      fields.push(describe(el, members));
-    }
+    const found = [];
+    // Adds the fields that are on the page right now and have not been recorded yet.
+    const sweep = () => {
+      const visited = new Set();
+      for (const el of deepAll(document, CANDIDATES)) {
+        if (seen.has(el) || visited.has(el) || !isField(el) || el.parentElement?.isContentEditable) continue;
+        const members = groupOf(el);
+        members.forEach((m) => visited.add(m));
+        if (!includeHidden && !members.some(isVisible)) continue;
+        members.forEach((m) => seen.add(m));
+        found.push({ el, field: describe(el, members) });
+      }
+    };
+    sweep();
+    const stopped = scroll ? await scrollThrough(sweep) : '';
+    // Page order, whatever order the scrolling turned them up in. Fields the page has since removed go last.
+    const inPage = found.filter((x) => x.el.isConnected)
+      .sort((a, b) => (a.el.compareDocumentPosition(b.el) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1));
+    const fields = [...inPage, ...found.filter((x) => !x.el.isConnected)].map((x) => x.field);
     // Two fields sharing a caption (e.g. salutation + first name in one cell) get their name appended.
     const count = {};
     for (const f of fields) count[f.label] = (count[f.label] || 0) + 1;
@@ -359,7 +375,80 @@
       if (count[f.label] > 1 && f.hint) f.label += ` (${f.hint})`;
       delete f.hint;
     }
-    return { frame: FRAME, fields };
+    return { frame: FRAME, fields, stopped };
+  }
+
+  // The window, plus any large panes inside the page that scroll on their own.
+  function scrollers() {
+    const inner = deepAll(document, 'div,main,section,article,form,ul,table,tbody').filter((el) => {
+      if (el.scrollHeight < el.clientHeight + 150 || el.clientHeight < 200) return false;
+      return /auto|scroll/.test(getComputedStyle(el).overflowY);
+    });
+    return [document.scrollingElement, ...inner.sort((a, b) => b.clientHeight - a.clientHeight).slice(0, 5)].filter(Boolean);
+  }
+
+  // Scrolls each pane from top to bottom, calling `sweep` at every stop. It only ever scrolls: it
+  // never clicks, types or follows links. It gives the page back the moment the person touches the
+  // mouse, wheel, keyboard or screen, when Stop is pressed in the panel, after SCROLL_TIME_LIMIT, or
+  // when a page keeps growing as it is scrolled (an endless feed). Unless the person took over, every pane is put back
+  // where it was. Returns why it stopped early: 'user', 'panel', 'time', 'endless', or '' if it finished.
+  async function scrollThrough(sweep) {
+    window.__powerfillStop = false;
+    let reason = '';
+    const takeOver = (e) => {
+      reason ||= 'user';
+      if (e.type === 'keydown' && e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); }
+    };
+    const signals = ['wheel', 'mousedown', 'touchstart', 'keydown'];
+    signals.forEach((type) => window.addEventListener(type, takeOver, { capture: true, passive: type !== 'keydown' }));
+    const banner = FRAME === 'top' ? document.createElement('div') : null;
+    if (banner) {
+      banner.id = 'powerfill-scanning';
+      banner.textContent = 'PowerFill is scrolling to find every field. Press Esc or click anywhere to stop.';
+      banner.style.cssText = 'all:initial;position:fixed;z-index:2147483647;top:12px;left:50%;transform:translateX(-50%);pointer-events:none;'
+        + 'padding:8px 14px;border-radius:999px;background:#172033;color:#fff;font:13px/1.3 system-ui,"Segoe UI",sans-serif;box-shadow:0 6px 20px rgba(0,0,0,.3);white-space:nowrap';
+      document.documentElement.append(banner);
+    }
+    const deadline = Date.now() + SCROLL_TIME_LIMIT;
+    const halted = () => {
+      reason ||= window.__powerfillStop ? 'panel' : Date.now() > deadline ? 'time' : '';
+      return !!reason;
+    };
+    const visited = [];
+    try {
+      for (const pane of scrollers()) {
+        visited.push([pane, pane.scrollTop]);
+        const bottom = () => Math.max(0, pane.scrollHeight - pane.clientHeight);
+        // Lazy sections make a page a little taller as it is scrolled. A feed makes it taller without
+        // end, so once the page is several times its starting height we stop following it.
+        const tallest = pane.scrollHeight * 3 + pane.clientHeight * 5;
+        for (let top = 0; !halted(); top = Math.min(top + Math.max(200, pane.clientHeight * 0.8), bottom())) {
+          pane.scrollTo({ top, behavior: 'instant' });
+          await pause(160);
+          sweep();
+          if (pane.scrollHeight > tallest) { reason ||= 'endless'; break; }
+          if (top < bottom()) continue;
+          // At the bottom: give lazy content a moment to arrive, then see whether the page grew.
+          const before = bottom();
+          await pause(350);
+          sweep();
+          if (bottom() <= before) break;
+        }
+        if (reason) break;
+      }
+    } finally {
+      signals.forEach((type) => window.removeEventListener(type, takeOver, { capture: true }));
+      banner?.remove();
+      if (reason !== 'user') for (const [pane, top] of visited) pane.scrollTo({ top, behavior: 'instant' });
+    }
+    return reason;
+  }
+
+  // Asks a scrolling scan in this frame to stop. Called through a fresh injection of the engine,
+  // so the request travels on `window`.
+  function stopScan() {
+    window.__powerfillStop = true;
+    return { frame: FRAME };
   }
 
   // ---------- fill ----------
@@ -678,7 +767,8 @@
 
   // Asks for the {{ask:...}} values on the page itself. Used when a fill is started with the
   // keyboard shortcut, where the side panel may not be open. Resolves to { answers } or { answers: null }.
-  function ask({ labels, defaults = {} }) {
+  // `choices` maps a label to suggestions (recent values, then the picklist's options) offered while typing.
+  function ask({ labels, defaults = {}, choices = {} }) {
     if (FRAME !== 'top') return null;
     return new Promise((resolve) => {
       const make = (tag, props = {}) => Object.assign(document.createElement(tag), props);
@@ -695,7 +785,17 @@
       const cancel = make('button', { type: 'button', textContent: 'Cancel' });
       footer.append(cancel, make('button', { className: 'go', textContent: 'Fill' }));
       form.append(make('h1', { textContent: 'PowerFill needs a few values' }),
-        ...labels.map((label, i) => { const row = make('label', { textContent: label }); row.append(inputs[i]); return row; }), footer);
+        ...labels.map((label, i) => {
+          const row = make('label', { textContent: label });
+          row.append(inputs[i]);
+          if (choices[label]?.length) {
+            const list = make('datalist', { id: 'choices-' + i });
+            list.append(...choices[label].map((value) => make('option', { value })));
+            inputs[i].setAttribute('list', list.id);
+            row.append(list);
+          }
+          return row;
+        }), footer);
       root.append(form);
       const finish = (answers) => { host.remove(); resolve({ answers }); };
       form.addEventListener('submit', (e) => { e.preventDefault(); finish(Object.fromEntries(inputs.map((i) => [i.name, i.value]))); });
@@ -708,5 +808,5 @@
     });
   }
 
-  window.__powerfill = { scan, fill, undo, highlight, startPicker, stopPicker, ask };
+  window.__powerfill = { scan, stopScan, fill, undo, highlight, startPicker, stopPicker, ask };
 })();

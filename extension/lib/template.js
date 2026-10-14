@@ -39,6 +39,12 @@ export const mappedColumn = (value) => {
   return tokens.length === 1 && tokens[0].type === 'column' && value.trim() === value.match(TOKEN)[0] ? tokens[0].name : null;
 };
 
+// The question's label when the value is one {{ask:...}} and nothing else, so the answer is the whole value.
+export const askedAlone = (value) => {
+  const tokens = tokensIn(value);
+  return tokens.length === 1 && tokens[0].type === 'ask' && value.trim() === value.match(TOKEN)[0] ? tokens[0].name : null;
+};
+
 // Works out a value for one fill. `row` maps column names to cells (null when the profile has no
 // data rows), `vars` maps My details keys to values, `answers` maps asked labels to what was typed.
 // Returns { value }, { empty: true } when it came out blank, or { error } when a token can't be resolved.

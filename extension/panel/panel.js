@@ -7,7 +7,7 @@ import './details.js';
 import { endPick } from './editor.js';
 import { $, icon, guard } from './dom.js';
 import { state, nav, syncTab } from './state.js';
-import { listVars, getSettings } from '../lib/store.js';
+import { listVars, getSettings, listRecents } from '../lib/store.js';
 
 $('#detailsBtn').append(icon('user', 16));
 $('#detailsBtn').onclick = guard(() => nav.details());
@@ -21,13 +21,15 @@ chrome.tabs.onUpdated.addListener((tabId, info) => {
 });
 // Profiles change behind the panel's back when a fill is run with the keyboard shortcut.
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === 'local' && changes.profiles && state.view === 'home' && !state.busy) nav.home();
+  if (area !== 'local') return;
+  if (changes.recents) state.recents = changes.recents.newValue || {};
+  if (changes.profiles && state.view === 'home' && !state.busy) nav.home();
 });
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && state.picking) endPick();
 });
 
 guard(async () => {
-  [state.vars, state.settings] = await Promise.all([listVars(), getSettings()]);
+  [state.vars, state.settings, state.recents] = await Promise.all([listVars(), getSettings(), listRecents()]);
   await nav.home();
 })();

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "PowerFill",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Scan a page's form fields, save the values as a profile, and fill the form in one click. Fill row by row from a spreadsheet.",
   "homepage_url": "https://github.com/ChimCatz/PowerFill",
   "minimum_chrome_version": "116",

@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.2.0 (2026-10-14)
+
+From the team's first round of testing.
+
+Added
+
+- **Move fields.** Drag a row by its handle, or use the Up and Down arrow keys on the handle. Fields are filled in sheet order.
+- **Search in picklists.** Picklists in the sheet, and the column matching in Data rows, open a list with a search box at the top. A value that is not on the list can be typed and used.
+- **Recent values.** The values last chosen for a field are pinned at the top of its picklist and suggested in its text box. They are kept per field of a site, so every profile for that form shares them.
+- **Scrolling scan.** "Scroll the page to find every field" scrolls the page before scanning, for fields that load or appear further down. It only scrolls, stops when the page is touched or Stop is pressed, has a 20-second limit, and restores the scroll position.
+- `{{ask:…}}` questions about a picklist suggest its options and recent answers.
+
+Fixed
+
+- A profile with a long page address pushed its Fill button out of a narrow panel. Every screen is now checked from 300px to 1400px wide.
+- Fields that a page fades in on scroll were skipped by the scan until they had been scrolled into view; the scrolling scan now finds them.
+
 ## 1.1.0 (2026-10-14)
 
 Added

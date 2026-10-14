@@ -4,7 +4,8 @@
 //   profiles  [{ id, name, urlPattern, fields: [{ id, label, selector, kind, value, enabled, ... }],
 //               data: { columns, rows, cursor }, answers, updatedAt, lastUsed }]
 //   vars      [{ key, value }]   the person's own "My details", used as {{my.key}}
-//   settings  { showSelectors }
+//   settings  { showSelectors, scrollScan }
+//   recents   { [site|selector]: [value, ...] }   the values last chosen for a field, newest first
 
 export const newId = () => crypto.randomUUID();
 
@@ -41,8 +42,29 @@ export const listVars = () => read('vars', []);
 export const saveVars = (vars) => write('vars', vars.filter((v) => v.key.trim()));
 export const varsMap = async () => Object.fromEntries((await listVars()).map((v) => [v.key.trim(), v.value]));
 
-export const getSettings = async () => ({ showSelectors: true, ...(await read('settings', {})) });
+export const getSettings = async () => ({ showSelectors: true, scrollScan: false, ...(await read('settings', {})) });
 export const saveSettings = (settings) => write('settings', settings);
+
+// Recent values are remembered per field of a site, not per profile, so every profile for the same
+// form offers them. The site is the part of the page pattern before the first path segment.
+export const recentKey = (urlPattern, selector) => `${String(urlPattern || '').replace(/^(\w+:\/\/[^/?*]+).*$/, '$1')}|${selector}`;
+export const listRecents = () => read('recents', {});
+
+const RECENTS_PER_FIELD = 6, RECENT_FIELDS_KEPT = 400;
+
+// Writes are queued, so two values remembered in quick succession don't overwrite each other.
+let recentQueue = Promise.resolve();
+export const pushRecent = (key, value) => (recentQueue = recentQueue.then(() => addRecent(key, value)));
+
+async function addRecent(key, value) {
+  const all = await listRecents();
+  const list = [value, ...(all[key] || []).filter((v) => v !== value)].slice(0, RECENTS_PER_FIELD);
+  delete all[key];   // re-adding moves the field to the end, so the oldest fields are dropped first
+  all[key] = list;
+  for (const old of Object.keys(all).slice(0, -RECENT_FIELDS_KEPT)) delete all[old];
+  await write('recents', all);
+  return all;
+}
 
 // Exports carry the field sheet and the column matching, but not the data rows or the answers
 // last typed in: those are usually real people's details and should not travel with a profile.

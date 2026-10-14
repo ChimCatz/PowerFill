@@ -6,8 +6,8 @@ export const $ = (selector, root = document) => root.querySelector(selector);
 export const asText = (v) => (Array.isArray(v) ? v.join(', ') : String(v ?? ''));
 export const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
-// Children may be nodes, strings, arrays of those, or null / false for "nothing here".
-const kids = (children) => children.flat().filter((c) => c != null && c !== false);
+// Children may be nodes, strings, arrays of those nested to any depth, or null / false for "nothing here".
+const kids = (children) => children.flat(Infinity).filter((c) => c != null && c !== false);
 
 export function h(tag, props = {}, ...children) {
   const el = Object.assign(document.createElement(tag), props);
@@ -33,6 +33,9 @@ const ICONS = {
   file: '<path d="M4 1.8h5l3 3v9.4H4V1.8Z"/><path d="M9 1.8v3h3"/>',
   bolt: '<path d="M9 1.5L3.5 9H8l-1 5.5L12.5 7H8l1-5.5Z"/>',
   rows: '<path d="M2 3.5h12M2 8h12M2 12.5h12"/>',
+  chevron: '<path d="M4 6l4 4 4-4"/>',
+  grip: '<path d="M6 4v.01M10 4v.01M6 8v.01M10 8v.01M6 12v.01M10 12v.01"/>',
+  stop: '<rect x="4" y="4" width="8" height="8" rx="1"/>',
 };
 
 export function icon(name, size = 15) {

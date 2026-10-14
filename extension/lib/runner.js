@@ -3,8 +3,8 @@
 // Runs the page engine inside a tab (all frames), and carries out a whole fill: work out the
 // values, fill, check what is still missing, remember enough to undo.
 
-import { saveProfile, patchProfile, varsMap } from './store.js';
-import { asksIn, columnsIn, resolveValue } from './template.js';
+import { saveProfile, patchProfile, varsMap, listRecents, pushRecent, recentKey } from './store.js';
+import { asksIn, askedAlone, columnsIn, resolveValue } from './template.js';
 import { rowObject } from './table.js';
 
 async function exec(tabId, injection) {
@@ -27,11 +27,14 @@ export async function callTab(tabId, method, arg = null) {
   }
 }
 
-export async function scanTab(tabId, options) {
+// Scans every frame. `stopped` says why a scrolling scan ended early ('user', 'panel', 'time', 'endless'), or ''.
+export async function scanPage(tabId, options) {
   const frames = await callTab(tabId, 'scan', options);
   frames.sort((a, b) => (b.frame === 'top') - (a.frame === 'top'));
-  return frames.flatMap((f) => f.fields);
+  return { fields: frames.flatMap((f) => f.fields), stopped: frames.map((f) => f.stopped).find(Boolean) || '' };
 }
+
+export const scanTab = async (tabId, options) => (await scanPage(tabId, options)).fields;
 
 export const hasValue = (v) => (Array.isArray(v) ? v.length > 0 : v != null && String(v) !== '');
 const isActive = (f) => f.enabled !== false && f.selector && hasValue(f.value);
@@ -60,10 +63,10 @@ async function fillFields(tabId, fields) {
 const EXPLAIN = { notfound: 'Not found on this page. Check the selector.' };
 
 // Shows the questions on the page itself; used when there is no side panel to ask in.
-export const askOnPage = (tabId) => async (labels, defaults) => (await callTab(tabId, 'ask', { labels, defaults }))[0]?.answers ?? null;
+export const askOnPage = (tabId) => async (labels, defaults, choices) => (await callTab(tabId, 'ask', { labels, defaults, choices }))[0]?.answers ?? null;
 
-// Fills the page from a profile. `ask(labels, defaults)` must resolve to { label: answer } or null
-// to cancel. With `advance`, a profile with data rows moves on to its next row afterwards.
+// Fills the page from a profile. `ask(labels, defaults, choices)` must resolve to { label: answer }
+// or null to cancel; `choices` offers each question's recent answers and picklist options. With `advance`, a profile with data rows moves on to its next row afterwards.
 // Returns a report: { outcome: 'filled' | 'cancelled' | 'finished' | 'nothing', filled, problems, missing, row }.
 export async function runProfile(tabId, profile, { ask, persist = true, advance = true } = {}) {
   const active = profile.fields.filter(isActive);
@@ -75,8 +78,18 @@ export async function runProfile(tabId, profile, { ask, persist = true, advance 
   if (usesRows && cursor >= data.rows.length) return { outcome: 'finished', row: { count: data.rows.length } };
 
   const labels = asksIn(active);
-  const answers = labels.length ? await ask(labels, profile.answers || {}) : {};
+  // A question that is a field's whole value can suggest that field's recent values and options.
+  const askedBy = Object.fromEntries(labels.map((label) => [label, active.find((f) => askedAlone(f.value) === label)]));
+  const recents = labels.length ? await listRecents() : {};
+  const keyOf = (f) => recentKey(profile.urlPattern, f.selector);
+  const choices = Object.fromEntries(labels.filter((l) => askedBy[l]).map((l) => [l,
+    [...new Set([...(recents[keyOf(askedBy[l])] || []), ...(askedBy[l].options || []).map((o) => o.text)])]]));
+  const answers = labels.length ? await ask(labels, profile.answers || {}, choices) : {};
   if (!answers) return { outcome: 'cancelled' };
+  for (const label of labels) {
+    const field = askedBy[label];
+    if (field && answers[label] && field.inputType !== 'password') await pushRecent(keyOf(field), answers[label]);
+  }
 
   const context = { row: data ? rowObject(data, cursor) : null, vars: await varsMap(), answers };
   const results = {};

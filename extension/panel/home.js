@@ -6,10 +6,10 @@ import { $, h, mount, icon, iconButton, toast, guard, confirmClick, download, pl
 import { state, nav, canRun, currentTab } from './state.js';
 import { reportEl } from './report.js';
 import { askInPanel } from './ask.js';
-import { toRow } from './editor.js';
-import { listProfiles, deleteProfile, patchProfile, importProfiles, exportPayload, newId } from '../lib/store.js';
+import { toRow, scanNote } from './editor.js';
+import { listProfiles, deleteProfile, patchProfile, importProfiles, exportPayload, newId, saveSettings } from '../lib/store.js';
 import { suggestPattern, matchesUrl } from '../lib/url.js';
-import { scanTab, runProfile, undoFill, hasValue } from '../lib/runner.js';
+import { callTab, scanPage, runProfile, undoFill, hasValue } from '../lib/runner.js';
 import { columnsIn } from '../lib/template.js';
 
 const view = () => $('#view');
@@ -19,6 +19,7 @@ const rowsOf = (p) => (p.data?.rows.length && columnsIn(activeFields(p)).length 
 
 async function showHome({ reload = true } = {}) {
   state.view = 'home';
+  view().dataset.view = 'home';
   state.draft = null;
   if (reload) {
     state.profiles = await listProfiles();
@@ -35,15 +36,24 @@ function renderHome() {
   const here = profiles.filter((p) => usable && matchesUrl(p.urlPattern, tab.url));
   const others = profiles.filter((p) => !here.includes(p));
   const hidden = h('input', { type: 'checkbox', checked: state.includeHidden, onchange: () => { state.includeHidden = hidden.checked; } });
+  const scroll = h('input', { type: 'checkbox', checked: state.settings.scrollScan, onchange: () => {
+    state.settings.scrollScan = scroll.checked;
+    saveSettings(state.settings);
+  } });
 
   mount(view(),
     h('section', { className: 'card scan' },
       h('div', { className: 'pagebar', title: tab?.url || '' },
         h('span', { className: 'dot' + (usable ? ' on' : '') }),
         h('span', { className: 'pagetitle', textContent: tab?.title || 'No page' })),
-      h('button', { className: 'primary big', disabled: !usable, onclick: guard(startScan) }, icon('scan', 16), 'Scan this page'),
+      state.scanning
+        ? h('button', { className: 'big stop', onclick: guard(() => callTab(state.tab.id, 'stopScan')) }, icon('stop', 14), 'Stop scanning')
+        : h('button', { className: 'primary big', disabled: !usable, onclick: guard(startScan) }, icon('scan', 16), 'Scan this page'),
+      state.scanning ? h('p', { className: 'muted', textContent: 'Scrolling the page to find every field. It only scrolls, and stops the moment you click or type on the page.' }) : null,
       usable
-        ? h('label', { className: 'check' }, hidden, 'Include hidden fields')
+        ? [h('label', { className: 'check' }, hidden, 'Include hidden fields'),
+          h('label', { className: 'check', title: 'Scrolls the page from top to bottom first, so fields that only load or appear further down are found too. It only scrolls, stops when you touch the page, and puts the page back where it was.' },
+            scroll, 'Scroll the page to find every field')]
         : h('p', { className: 'muted', textContent: 'PowerFill can’t work on this kind of page. Open the form you want to fill.' })),
 
     h('h2', {}, 'Profiles for this page', here.length ? h('span', { className: 'count', textContent: here.length }) : null),
@@ -143,9 +153,20 @@ async function undoFromHome(p) {
 
 async function startScan() {
   const tab = await currentTab();
-  const fields = await scanTab(tab.id, { includeHidden: state.includeHidden });
+  const scroll = state.settings.scrollScan;
+  let result;
+  // A scrolling scan takes a few seconds, so the button turns into Stop while it runs.
+  state.scanning = scroll;
+  if (scroll) renderHome();
+  try {
+    result = await scanPage(tab.id, { includeHidden: state.includeHidden, scroll });
+  } finally {
+    state.scanning = false;
+    if (!result && state.view === 'home') renderHome();
+  }
+  const { fields, stopped } = result;
   nav.editor({ id: newId(), name: (tab.title || 'New profile').slice(0, 60), urlPattern: suggestPattern(tab.url), fields: fields.map(toRow) }, true);
-  if (fields.length) toast(`Found ${plural(fields.length, 'field')}. Type the values to fill, then save.`);
+  if (fields.length) toast(`Found ${plural(fields.length, 'field')}.` + (scanNote(stopped) || ' Type the values to fill, then save.'), stopped ? 'bad' : '');
   else toast('No fields found on this page. Add rows by hand, or use Pick field.', 'bad');
 }
 

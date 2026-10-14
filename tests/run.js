@@ -14,6 +14,7 @@ const ROUTES = {
   '/leads/new': path.join(ROOT, 'examples/demo-form.html'),
   '/widgets.html': path.join(__dirname, 'fixtures/widgets.html'),
   '/frame.html': path.join(__dirname, 'fixtures/frame.html'),
+  '/long.html': path.join(__dirname, 'fixtures/long-page.html'),
 };
 const GOOD = fs.readFileSync(path.join(ROOT, 'examples/leads.csv'), 'utf8');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -74,20 +75,33 @@ const section = (title) => console.log('\n' + title);
         const v = r.querySelector('.value');
         return {
           label: r.querySelector('.label').value, selector: r.querySelector('.selector').value,
-          control: v.tagName === 'DETAILS' ? 'checklist' : v.tagName === 'SELECT' ? 'dropdown' : v.classList.contains('template') ? 'template' : v.tagName === 'TEXTAREA' ? 'textarea' : v.type,
-          value: v.tagName === 'DETAILS' ? v.querySelector('summary').textContent : v.value,
+          control: v.classList.contains('picker') ? (v.dataset.multiple ? 'checklist' : 'dropdown') : v.tagName === 'SELECT' ? 'dropdown' : v.classList.contains('template') ? 'template' : v.tagName === 'TEXTAREA' ? 'textarea' : v.type,
+          value: v.classList.contains('picker') ? (v.classList.contains('blank') ? '' : v.querySelector('.picker-text').textContent) : v.value,
           required: !!r.querySelector('.req'), tone: ['ok', 'warn', 'bad'].find((c) => r.classList.contains(c)) || '', msg: r.querySelector('.msg')?.textContent || '',
         };
       }));
       const row = async (label) => (await rows()).find((r) => r.label === label);
-      // Types a value into a row's value cell. An array ticks those entries of a checklist.
+      // Sets a row's value the way a person would: typing into a box, or opening the searchable
+      // list and clicking an entry. An array ticks exactly those entries of a multi-select.
       const setValue = (label, value) => panel.evaluate((label, value) => {
         const r = [...document.querySelectorAll('#rows .row[data-id]')].find((x) => x.querySelector('.label').value === label);
         if (!r) throw new Error('no row "' + label + '"');
         const v = r.querySelector('.value');
-        if (v.tagName === 'DETAILS') {
-          for (const l of v.querySelectorAll('label')) { const box = l.querySelector('input'); if (box.checked !== value.includes(l.textContent.trim())) box.click(); }
-          return;
+        if (v.classList.contains('picker')) {
+          v.click();
+          const pop = document.querySelector('#picker');
+          const items = () => [...pop.querySelectorAll('[role="option"]:not(.recent)')];
+          const name = (o) => o.textContent.replace('✓', '');
+          if (!v.dataset.multiple) {
+            const hit = items().find((o) => o.dataset.value === value || name(o) === value);
+            if (!hit) { pop.hidePopover(); throw new Error(`the list for "${label}" has no "${value}"`); }
+            return hit.click();
+          }
+          for (const text of items().map(name).filter((x) => x !== 'Clear all')) {
+            const o = items().find((x) => name(x) === text);
+            if ((o.getAttribute('aria-selected') === 'true') !== value.includes(text)) o.click();
+          }
+          return pop.hidePopover();
         }
         v.value = value;
         if (v.tagName === 'SELECT' && v.value !== value) throw new Error(`the dropdown for "${label}" has no "${value}"`);
@@ -308,7 +322,7 @@ const section = (title) => console.log('\n' + title);
     await t.click('Use these rows');
     await t.panel.waitForSelector('.sheet');
     check('loading says how many rows and matches', /Loaded 5 rows from the box above\. 14 of 14 columns matched to fields\./.test(await t.toast()), await t.toast());
-    same('every column is matched to its field', await t.panel.$$eval('.match select', (els) => els.filter((e) => e.value).length), 14);
+    same('every column is matched to its field', await t.panel.$$eval('.match .picker', (els) => els.filter((e) => e.dataset.value).length), 14);
     check('the check passes', /All 5 rows look right/.test(await t.panel.$eval('#pane .report', (e) => e.textContent)));
     same('the first row is next', await t.panel.$$eval('.sheet tbody tr', (trs) => trs.map((tr) => tr.className)), ['current', '', '', '', '']);
     await t.shot('07-data-loaded', true);
@@ -506,7 +520,291 @@ const section = (title) => console.log('\n' + title);
     same('filter narrows the sheet', await t.panel.$$eval('#rows .row[data-id]:not([hidden]) .label', (els) => els.map((e) => e.value)), ['Follow-up date']);
     await t.panel.evaluate(() => [...document.querySelectorAll('.toolbar .check input')].at(-1).click());
     await sleep(200);
-    same('selectors can be hidden, and the choice is remembered', [await t.panel.$eval('#rows', (e) => e.classList.contains('no-selectors')), await t.panel.evaluate(async () => (await chrome.storage.local.get('settings')).settings)], [true, { showSelectors: false }]);
+    same('selectors can be hidden, and the choice is remembered', [await t.panel.$eval('#rows', (e) => e.classList.contains('no-selectors')), await t.panel.evaluate(async () => (await chrome.storage.local.get('settings')).settings.showSelectors)], [true, false]);
+    await t.close();
+
+    // ------------------------------------------------------------------
+    section('13. Moving fields up and down');
+    t = await open('/leads/new');
+    await t.scan();
+    const order = async () => (await t.rows()).map((x) => x.label).slice(0, 5);
+    const rowScript = "const rowOf = (label) => [...document.querySelectorAll('#rows .row[data-id]')].find((x) => x.querySelector('.label').value === label);";
+    // Presses a key on a row's handle and reports which row's handle has the focus afterwards.
+    const gripKey = (label, key) => t.panel.evaluate(new Function('label', 'key', rowScript + `
+      const grip = rowOf(label).querySelector('.grip');
+      grip.focus();
+      grip.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
+      return document.activeElement.classList.contains('grip') ? document.activeElement.closest('.row').querySelector('.label').value : '';`), label, key);
+    // Goes through the browser's drag-and-drop events for dragging one row onto another.
+    const drag = (from, to, where) => t.panel.evaluate(new Function('from', 'to', 'where', rowScript + `
+      const src = rowOf(from), dst = rowOf(to), data = new DataTransfer();
+      const idle = src.draggable;
+      src.querySelector('.grip').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+      const armed = src.draggable;
+      src.dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer: data }));
+      const box = dst.getBoundingClientRect();
+      const at = { bubbles: true, cancelable: true, clientX: box.left + 40, clientY: where === 'after' ? box.bottom - 3 : box.top + 3, dataTransfer: data };
+      dst.dispatchEvent(new DragEvent('dragover', at));
+      const marked = (dst.className.match(/drop-[a-z]+/) || [''])[0];
+      dst.dispatchEvent(new DragEvent('drop', at));
+      src.dispatchEvent(new DragEvent('dragend', { bubbles: true }));
+      return { idle, armed, marked };`), from, to, where);
+    same('Arrow Up on the handle moves the row up and keeps the handle focused', [await gripKey('Company', 'ArrowUp'), await order()], ['Company', ['First name', 'Company', 'Last name', 'Work email', 'Phone']]);
+    await gripKey('Company', 'ArrowDown');
+    await gripKey('Company', 'ArrowDown');
+    same('Arrow Down moves it down', await order(), ['First name', 'Last name', 'Work email', 'Company', 'Phone']);
+    same('the top row cannot go any higher', [await gripKey('First name', 'ArrowUp'), (await order())[0]], ['First name', 'First name']);
+    same('a row can only be dragged by its handle, and shows where it will land', await drag('Phone', 'First name', 'before'), { idle: false, armed: true, marked: 'drop-before' });
+    same('dropping moves the row there', await order(), ['Phone', 'First name', 'Last name', 'Work email', 'Company']);
+    await drag('Phone', 'Company', 'after');
+    same('dropping on the lower half puts it after', await order(), ['First name', 'Last name', 'Work email', 'Company', 'Phone']);
+    same('dropping a row on itself changes nothing', [(await drag('Company', 'Company', 'after')).marked, await order()], ['', ['First name', 'Last name', 'Work email', 'Company', 'Phone']]);
+    await t.panel.$eval('.name', (e) => { e.value = 'Reordered'; e.dispatchEvent(new Event('input')); });
+    await t.click('Save');
+    await sleep(300);
+    same('the saved profile keeps the new order', await t.panel.evaluate(async () => (await chrome.storage.local.get('profiles')).profiles[0].fields.slice(0, 5).map((f) => f.label)), ['First name', 'Last name', 'Work email', 'Company', 'Phone']);
+    await t.shot('13-reorder');
+
+    // ------------------------------------------------------------------
+    section('14. Searchable picklists and recent values');
+    const openPicker = (label) => t.panel.evaluate(new Function('label', rowScript + `
+      rowOf(label).querySelector('.value.picker').click();
+      return document.querySelector('#picker').matches(':popover-open') ? document.activeElement.className : 'closed';`), label);
+    const listed = () => t.panel.$$eval('#picker .picker-list > *', (els) => els.map((e) => (e.classList.contains('picker-head') ? '# ' : '') + e.textContent));
+    const search = (text) => t.panel.$eval('#picker .picker-search', (s, text) => { s.value = text; s.dispatchEvent(new Event('input')); }, text);
+    const press = (key) => t.panel.$eval('#picker .picker-search', (s, key) => { s.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true })); }, key);
+    const isOpen = () => t.panel.$eval('#picker', (p) => p.matches(':popover-open'));
+    const clickItem = (text) => t.panel.evaluate((text) => [...document.querySelectorAll('#picker [role="option"]:not(.recent)')].find((o) => o.textContent.replace('✓', '') === text).click(), text);
+    const shown = async (label) => (await t.row(label)).value;
+
+    same('opening a picklist puts the cursor in its search box', await openPicker('Industry'), 'picker-search');
+    same('the whole list is there, with "skip" first', await listed(), ['— skip —', 'Banking / Financial Services', 'Education', 'Healthcare', 'IT / Software', 'Manufacturing', 'Retail']);
+    await search('heal');
+    same('typing narrows the list', await listed(), ['Healthcare', 'Use “heal”']);
+    await press('Enter');
+    same('Enter takes the first match and closes the list', [await shown('Industry'), await isOpen()], ['Healthcare', false]);
+    await sleep(250);
+    await openPicker('Industry');
+    same('the value just chosen is pinned under Recent', (await listed()).slice(0, 5), ['— skip —', '# Recent', 'Healthcare', '# All', 'Banking / Financial Services']);
+    await clickItem('Retail');
+    await sleep(250);
+    await openPicker('Industry');
+    same('newest recent first', (await listed()).slice(1, 4), ['# Recent', 'Retail', 'Healthcare']);
+    await search('man');
+    await press('ArrowDown');
+    await press('ArrowUp');
+    await press('Enter');
+    same('arrow keys move through the matches', await shown('Industry'), 'Manufacturing');
+    await sleep(250);
+    await openPicker('Industry');
+    await search('Aerospace');
+    same('a value that is not on the list can still be used', await listed(), ['Use “Aerospace”']);
+    await press('Enter');
+    same('and it is kept as typed', await shown('Industry'), 'Aerospace');
+    await sleep(250);
+    await openPicker('Industry');
+    await t.panel.bringToFront();
+    await t.panel.keyboard.press('Escape');
+    same('Esc closes the list and changes nothing', [await isOpen(), await shown('Industry')], [false, 'Aerospace']);
+    await openPicker('Interested in');
+    await clickItem('Security');
+    await clickItem('AI');
+    same('a multi-select stays open and ticks what is chosen', [await isOpen(), (await listed()).filter((x) => x.startsWith('✓'))], [true, ['✓Security', '✓AI']]);
+    await search('net');
+    same('its search works too', await listed(), ['Networking']);
+    await t.shot('14-picker-multi');
+    await t.panel.$eval('#picker', (p) => p.hidePopover());
+    same('the choices show on the button', await shown('Interested in'), 'Security, AI');
+    await t.setValue('Country', 'Singapore');
+    same('recent values are stored per field of the site, newest first',
+      await t.panel.evaluate(async (base) => { const r = (await chrome.storage.local.get('recents')).recents; return [r[base + '|#industry'], r[base + '|#country']]; }, base),
+      [['Aerospace', 'Manufacturing', 'Retail', 'Healthcare'], ['Singapore']]);
+
+    await sleep(250);
+    await openPicker('Industry');
+    await t.shot('14-picker-recents');
+    await t.panel.$eval('#picker', (p) => p.hidePopover());
+    await t.click('Save');
+    await sleep(300);
+    await t.click('‹ Profiles');
+    await t.panel.waitForSelector('.profile');
+    await t.scan();
+    await openPicker('Industry');
+    same('a new profile for the same site offers the same recents', (await listed()).slice(1, 6), ['# Recent', 'Aerospace', 'Manufacturing', 'Retail', 'Healthcare']);
+    await t.panel.$eval('#picker', (p) => p.hidePopover());
+    same('text boxes suggest what was typed in them before', await t.panel.evaluate(new Function(rowScript + `
+      const input = rowOf('Country').querySelector('.value');
+      return [...document.getElementById(input.getAttribute('list')).options].map((o) => o.value);`)), ['Singapore']);
+
+    await t.insert('Lead status', 'Ask me each time');
+    await t.panel.click('#fillBtn');
+    await t.panel.waitForSelector('#ask[open]');
+    same('a question about a picklist offers its options', await t.panel.$$eval('#ask datalist option', (os) => os.map((o) => o.value)), ['New', 'Call back - interested', 'Call back - busy', 'Qualified', 'Not interested']);
+    await t.panel.type('#ask input', 'Qualified');
+    await t.reportAfter(() => t.panel.click('#ask button.primary'));
+    same('the answer is filled in', (await t.form()).status, 'Qualified');
+    await t.panel.click('#fillBtn');
+    await t.panel.waitForSelector('#ask[open]');
+    same('next time that answer leads the suggestions', await t.panel.$$eval('#ask datalist option', (os) => os.map((o) => o.value).slice(0, 2)), ['Qualified', 'New']);
+    await t.click('Cancel');
+
+    await t.panel.click('.tab:nth-child(2)');
+    await t.panel.$eval('.paste', (el, text) => { el.value = text; }, GOOD);
+    await t.click('Use these rows');
+    await t.panel.waitForSelector('.sheet');
+    await t.panel.$eval('.fold', (d) => { d.open = true; });
+    await t.panel.$eval('.match .picker', (b) => b.click());
+    await search('zzz');
+    same('column matching is searchable, and only offers real fields', await listed(), ['Nothing matches']);
+    await search('email');
+    same('searching the fields', await listed(), ['Work email', 'Opted in to email updates']);
+    await t.panel.$eval('#picker', (p) => p.hidePopover());
+    await t.close();
+
+    // ------------------------------------------------------------------
+    section('15. Scrolling scan: fields that only appear further down');
+    t = await open('/long.html');
+    const labels = async () => (await t.rows()).map((x) => x.label);
+    const scrollY = () => t.site.evaluate(() => Math.round(scrollY));
+    await t.scan();
+    same('an ordinary scan sees only what the page has loaded so far', await labels(), ['Top name', 'Top email', 'Pane first']);
+    await t.click('‹ Profiles');
+    await sleep(100);
+    await t.click('Discard changes?');
+    await t.panel.waitForSelector('button.big');
+
+    const tickScroll = () => t.panel.evaluate(() => { const box = [...document.querySelectorAll('.scan .check')].find((l) => /Scroll the page/.test(l.textContent)).querySelector('input'); if (!box.checked) box.click(); });
+    // The page has to be the visible tab, as it is in real use, or the browser pauses its animations.
+    const startScan = async () => { await t.site.bringToFront(); await t.panel.evaluate(() => document.querySelector('button.big').click()); };
+    await tickScroll();
+    await t.site.evaluate(() => scrollTo(0, 250));
+    await startScan();
+    await t.site.waitForSelector('#powerfill-scanning');
+    same('while it scrolls, the page says so and the panel offers Stop', [await t.site.$eval('#powerfill-scanning', (b) => /Press Esc or click anywhere to stop/.test(b.textContent)), await t.panel.$eval('button.big', (b) => b.textContent)], [true, 'Stop scanning']);
+    await t.panel.waitForSelector('#rows .row[data-id]', { timeout: 30000 });
+    same('everything is found, in page order', await labels(), ['Top name', 'Top email', 'Pane first', 'Pane last', 'Revealed city', 'Revealed plan', 'Lazy phone', 'Lazy notes']);
+    same('the page is put back where it was, and the notice is gone', [await scrollY(), await t.site.$('#powerfill-scanning'), await t.site.$eval('#pane', (p) => p.scrollTop)], [250, null, 0]);
+    check('the summary does not claim it was cut short', /^Found 8 fields\. Type the values/.test(await t.toast()), await t.toast());
+    same('the choice is remembered', await t.panel.evaluate(async () => (await chrome.storage.local.get('settings')).settings.scrollScan), true);
+    await t.close();
+
+    t = await open('/long.html?endless', { wipe: false });
+    // Runs a scrolling scan through the same code the panel uses and reports how it ended.
+    const scanInBackground = () => t.panel.evaluate((tabId) => {
+      window.pending = (async () => {
+        const started = Date.now();
+        const { fields, stopped } = await (await import('../lib/runner.js')).scanPage(tabId, { scroll: true });
+        return { stopped, fields: fields.length, seconds: Math.round((Date.now() - started) / 100) / 10 };
+      })();
+    }, t.tabId);
+    const outcome2 = () => t.panel.evaluate(() => window.pending);
+    await t.site.bringToFront();
+    await scanInBackground();
+    let scanResult = await outcome2();
+    check('a page that keeps growing is given up on, well inside the time limit', scanResult.stopped === 'endless' && scanResult.seconds < 18 && scanResult.fields > 8, scanResult);
+    same('and the page is put back at the top', await scrollY(), 0);
+
+    await scanInBackground();
+    await t.site.waitForSelector('#powerfill-scanning');
+    await sleep(500);
+    await t.site.mouse.move(400, 300);
+    await t.site.mouse.wheel({ deltaY: 120 });
+    scanResult = await outcome2();
+    same('touching the mouse wheel hands the page straight back', scanResult.stopped, 'user');
+    check('it stays where the person left it instead of jumping back', (await scrollY()) > 0, await scrollY());
+    check('what was found so far is kept', scanResult.fields >= 3, scanResult);
+
+    await t.site.evaluate(() => scrollTo(0, 0));
+    await scanInBackground();
+    await t.site.waitForSelector('#powerfill-scanning');
+    await sleep(400);
+    await t.site.keyboard.press('Escape');
+    same('so does Esc', (await outcome2()).stopped, 'user');
+
+    await t.site.evaluate(() => scrollTo(0, 0));
+    await t.site.mouse.click(5, 5);
+    await scanInBackground();
+    await t.site.waitForSelector('#powerfill-scanning');
+    await sleep(400);
+    await t.site.mouse.click(600, 400);
+    same('and a click', (await outcome2()).stopped, 'user');
+
+    await t.site.evaluate(() => scrollTo(0, 120));
+    await startScan();
+    await t.panel.waitForSelector('button.stop');
+    await sleep(600);
+    await t.panel.evaluate(() => document.querySelector('button.stop').click());
+    await t.panel.waitForSelector('#rows .row[data-id]', { timeout: 30000 });
+    check('Stop in the panel ends it and says the scan was cut short', /The scroll was stopped early/.test(await t.toast()), await t.toast());
+    same('after Stop the page goes back to where it was', await scrollY(), 120);
+    same('nothing on the page was changed by any of this', await t.site.evaluate(() => [...document.querySelectorAll('input, textarea')].filter((i) => i.value).length), 0);
+    await t.close();
+
+    // ------------------------------------------------------------------
+    section('16. Every screen, from the narrowest panel to the widest');
+    t = await open('/leads/new');
+    await t.panel.evaluate(async (base) => {
+      const field = (id, label, selector, extra = {}) => ({ id, label, selector, kind: 'text', value: 'x', enabled: true, frame: 'top', ...extra });
+      const long = 'Quarterly enterprise lead intake for the Asia Pacific regional marketing team';
+      await chrome.storage.local.set({ profiles: [
+        { id: 'here', name: long, urlPattern: base + '/leads/new', fields: [field('a', 'First name', '#first'), field('b', 'A field whose label is much longer than usual labels tend to be', '#company', { required: true }),
+          field('c', 'Industry', '#industry', { kind: 'select', value: 'Banking / Financial Services', options: [{ value: 'Banking / Financial Services', text: 'Banking / Financial Services' }] })],
+          data: { columns: ['First name', 'A column with a very long heading indeed'], rows: [['Maximiliana-Alexandrina', 'A very long cell value that goes on and on without stopping']], cursor: 0 } },
+        { id: 'other', name: 'Leads v2', urlPattern: 'https://crm.example.com/a-very-long-application-path/index.php?module=Leads&view=Edit&app=MARKETING&more=parameters', fields: [field('d', 'First name', '#first')] },
+      ] });
+    }, base);
+    await t.panel.reload();
+    await t.panel.waitForSelector('.profile');
+    // Anything sticking out past the panel's edge, apart from the data table, which scrolls on purpose.
+    const spill = () => t.panel.evaluate(() => {
+      const out = [];
+      for (const el of document.querySelectorAll('body *')) {
+        if (el.closest('.sheet-wrap, datalist, select') || el.tagName === 'SCRIPT') continue;
+        const r = el.getBoundingClientRect();
+        if (r.width && r.height && (r.right > innerWidth + 1 || r.left < -1)) out.push(el.tagName.toLowerCase() + '.' + String(el.className).split(' ')[0]);
+      }
+      return { sideways: document.documentElement.scrollWidth - innerWidth, out: out.slice(0, 4) };
+    });
+    const fits = { sideways: 0, out: [] };
+    const widths = [300, 340, 420, 680, 1000, 1400];
+    for (const width of widths) {
+      await t.panel.setViewport({ width, height: 800 });
+      await sleep(120);
+      await t.panel.$eval('.others', (d) => { d.open = true; });
+      const buttons = await t.panel.$$eval('.profile-head button', (bs) => bs.map((b) => { const r = b.getBoundingClientRect(); return r.width > 30 && r.left >= 0 && r.right <= innerWidth; }));
+      same(`home at ${width}px: nothing spills, both Fill buttons are on screen`, [await spill(), buttons], [fits, [true, true]]);
+      if (width === 300 || width === 1400) await t.shot('16-home-' + width);
+    }
+    await t.panel.setViewport({ width: 300, height: 800 });
+    await sleep(120);
+    same('at 300px long addresses are cut short with an ellipsis rather than pushing the card wider', await t.panel.$$eval('.meta', (ms) => ms.map((m) => m.scrollWidth > m.clientWidth)), [true, true]);
+    await t.panel.evaluate(() => document.querySelector('.profile .links .link').click());
+    await t.panel.waitForSelector('#rows .row[data-id]');
+    for (const width of widths) {
+      await t.panel.setViewport({ width, height: 800 });
+      await sleep(120);
+      same(`field sheet at ${width}px`, await spill(), fits);
+    }
+    await t.panel.setViewport({ width: 300, height: 800 });
+    await sleep(120);
+    await t.shot('16-sheet-300');
+    await t.panel.$eval('.value.picker', (b) => b.click());
+    same('an open picklist stays inside a 300px panel', await t.panel.$eval('#picker', (p) => { const r = p.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth && r.bottom <= innerHeight; }), true);
+    await t.panel.$eval('#picker', (p) => p.hidePopover());
+    await t.panel.click('.tab:nth-child(2)');
+    for (const width of widths) {
+      await t.panel.setViewport({ width, height: 800 });
+      await sleep(120);
+      same(`data rows at ${width}px`, await spill(), fits);
+    }
+    await t.panel.setViewport({ width: 300, height: 800 });
+    await t.panel.click('#detailsBtn');
+    await t.panel.waitForSelector('.var');
+    for (const width of [300, 1400]) {
+      await t.panel.setViewport({ width, height: 800 });
+      await sleep(120);
+      same(`My details at ${width}px`, await spill(), fits);
+    }
     await t.close();
   } finally {
     await browser.close();

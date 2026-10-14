@@ -44,7 +44,13 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
         for (const row of document.querySelectorAll('#rows .row[data-id]')) {
           const value = values[row.querySelector('.label').value], v = row.querySelector('.value');
           if (value === undefined) continue;
-          if (v.tagName === 'DETAILS') { for (const l of v.querySelectorAll('label')) if (value.includes(l.textContent.trim())) l.querySelector('input').click(); continue; }
+          if (v.classList.contains('picker')) {
+            v.click();
+            const pop = document.querySelector('#picker');
+            for (const o of [...pop.querySelectorAll('[role="option"]')].filter((o) => [].concat(value).includes(o.textContent))) o.click();
+            if (pop.matches(':popover-open')) pop.hidePopover();
+            continue;
+          }
           v.value = value;
           v.dispatchEvent(new Event(v.tagName === 'SELECT' ? 'change' : 'input', { bubbles: true }));
         }
@@ -52,7 +58,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
       const type = (selector, text) => panel.$eval(selector, (el, text) => { el.value = text; el.dispatchEvent(new Event('input')); }, text);
       const scan = async () => { await click('Scan this page'); await panel.waitForSelector('#rows .row[data-id]'); await type('.editor-head .mono', 'https://crm.example.com/leads/new'); };
       const fill = async () => { await panel.click('#fillBtn'); await panel.waitForSelector('#report .report'); };
-      const quiet = () => panel.$eval('#toast', (el) => { el.hidden = true; });
+      const quiet = () => panel.$eval('#toast', (el) => { el.hidden = true; scrollTo(0, 0); });
       const grab = async (page) => { await page.bringToFront(); return page.screenshot({ encoding: 'base64' }); };
       return { site, panel, click, setValues, type, scan, fill, quiet, grab };
     }
@@ -123,7 +129,28 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     await stitch('data-check.png', [await t.grab(t.panel)]);
     await t.site.close(); await t.panel.close();
 
-    // 3. The wide sheet in Chrome's dark theme, with a question and a personal detail in it.
+    // 3. A picklist open: the search box, the recently chosen values, then the full list.
+    t = await open({ width: 440, height: 640 });
+    await t.scan();
+    await t.type('.name', 'New lead: call back');
+    for (const industry of ['Education', 'Healthcare', 'IT / Software']) {
+      await t.setValues({ Industry: industry });
+      await sleep(260);
+    }
+    await t.setValues({ 'First name': 'Maria', 'Last name': 'Santos', Company: 'Northwind Trading' });
+    await t.panel.$eval('#toast', (el) => { el.hidden = true; });
+    await t.panel.evaluate(() => {
+      const row = [...document.querySelectorAll('#rows .row[data-id]')].find((r) => r.querySelector('.label').value === 'Industry');
+      row.scrollIntoView({ block: 'start' });
+      scrollBy(0, -60);
+    });
+    await sleep(300);
+    await t.panel.evaluate(() => [...document.querySelectorAll('#rows .row[data-id]')].find((r) => r.querySelector('.label').value === 'Industry').querySelector('.value.picker').click());
+    await sleep(200);
+    await stitch('picker.png', [await t.grab(t.panel)]);
+    await t.site.close(); await t.panel.close();
+
+    // 4. The wide sheet in Chrome's dark theme, with a question and a personal detail in it.
     t = await open({ width: 900, height: 660, dark: true });
     await t.panel.evaluate(() => chrome.storage.local.set({ vars: [{ key: 'email', value: 'me@team.example' }] }));
     await t.panel.reload();

@@ -7,8 +7,10 @@ export const state = {
   view: 'home',        // 'home' | 'editor' | 'details'
   profiles: [],
   vars: [],            // My details: [{ key, value }]
-  settings: { showSelectors: true },
+  settings: { showSelectors: true, scrollScan: false },
+  recents: {},         // values last chosen per field of a site, see lib/store.js
   includeHidden: false,
+  scanning: false,     // a scrolling scan is under way
   runs: {},            // last fill report per profile id, shown on the home cards
   busy: false,         // a fill or undo started from the home view is in progress
   othersOpen: false,   // the "Other profiles" list on the home view is expanded

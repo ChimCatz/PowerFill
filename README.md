@@ -24,6 +24,8 @@ A Chrome extension that reads the fields on any web form, lets you set the value
 - **Checks before you save.** After every fill it lists what could not be filled and why, and which required fields are still empty.
 - **Undoes a fill.** One click, or **Alt+Shift+U**, puts the page back the way it was.
 - **Asks when it has to.** A value can be asked for at fill time, or taken from your own saved details.
+- **Makes long picklists quick.** Every picklist has a search box, with the values you chose recently pinned at the top.
+- **Finds fields that load late.** An optional scrolling scan reaches fields a page only loads or reveals further down.
 - **Works on awkward pages.** Select2 dropdowns, React-style forms, iframes and shadow DOM.
 - **Keeps your data local.** Everything stays in your own browser, and PowerFill never submits a form for you.
 
@@ -55,8 +57,31 @@ Tips:
 - **Grab page values** copies whatever is typed into the page right now into the sheet. Fill the form by hand once, grab, save.
 - **Duplicate** a profile to keep several versions of the same form.
 - Untick a row to keep it but skip it. **Filter fields** narrows a long sheet, and unticking **Selectors** hides the selector line.
+- Drag the dotted handle at the left of a row to move it, or focus the handle and press the Up and Down arrow keys. Fields are filled in the order of the sheet.
 
 <p align="center"><img src="docs/panel-dark.png" alt="The field sheet in a wide panel, in Chrome's dark theme" width="760"><br><em>A wide panel becomes a Label, Selector, Value sheet. It follows Chrome's light or dark theme.</em></p>
+
+### Picklists: search and recent values
+
+Click a picklist in the sheet and start typing; the list narrows as you type and **Enter** takes the first match. The values you chose most recently for that field are pinned under **Recent**, and they follow the field rather than the profile, so every profile for the same site offers them. If the value you need is not on the list, type it and choose **Use "…"**.
+
+<p align="center"><img src="docs/picker.png" alt="A picklist open in the panel: a search box, three recent values, then the full list" width="440"></p>
+
+Text boxes suggest what you typed into them before, and a `{{ask:…}}` question about a picklist offers that picklist's options and recent answers as you type.
+
+### When a scan misses fields
+
+Some pages only load or reveal part of a form once you scroll to it, so an ordinary scan cannot see those fields. Tick **Scroll the page to find every field** before scanning (the choice is remembered) and PowerFill scrolls the page from top to bottom first.
+
+While it does that:
+
+- It only scrolls. It never clicks, types or follows a link.
+- It stops the moment you click, scroll, type or press **Esc** on the page, and leaves the page where you are.
+- **Stop scanning** in the panel ends it too.
+- It gives up after 20 seconds, or sooner on a page that keeps growing as it scrolls, such as a feed.
+- Otherwise it puts the page back where it was.
+
+If it stops early, it keeps the fields found so far and tells you the rest may be missing.
 
 ### Fill from a spreadsheet
 

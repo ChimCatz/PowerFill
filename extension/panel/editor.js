@@ -7,8 +7,9 @@ import { state, nav, currentTab } from './state.js';
 import { reportEl } from './report.js';
 import { askInPanel } from './ask.js';
 import { renderDataTab, resetDataTab } from './datatab.js';
-import { saveProfile, saveSettings, newId } from '../lib/store.js';
-import { callTab, scanTab, runProfile, undoFill, hasValue } from '../lib/runner.js';
+import { pickerEl } from './picker.js';
+import { saveProfile, saveSettings, newId, recentKey, pushRecent } from '../lib/store.js';
+import { callTab, scanTab, scanPage, runProfile, undoFill, hasValue } from '../lib/runner.js';
 import { normalizeLocator } from '../lib/locator.js';
 import { isTemplate, askToken, columnToken, myToken, columnsIn } from '../lib/template.js';
 
@@ -39,6 +40,7 @@ function touch() {
 
 function renderEditor() {
   state.view = 'editor';
+  $('#view').dataset.view = 'editor';
   const d = state.draft;
   const name = h('input', { className: 'name', value: d.name, placeholder: 'Profile name', oninput: () => { d.name = name.value; touch(); } });
   name.setAttribute('aria-label', 'Profile name');
@@ -119,13 +121,59 @@ function renderRows() {
   const fields = state.draft.fields;
   mount($('#rows'),
     h('div', { className: 'row head' },
-      h('span', { className: 'on' }), h('span', { className: 'labelbox', textContent: 'Label' }),
+      h('span', { className: 'grip' }), h('span', { className: 'on' }), h('span', { className: 'labelbox', textContent: 'Label' }),
       h('span', { className: 'selector', textContent: 'Selector' }), h('span', { className: 'valuebox', textContent: 'Value to fill' }),
       h('span', { className: 'tools' })),
     fields.length ? fields.map(rowEl) : h('div', { className: 'empty' },
       h('strong', { textContent: 'No fields yet' }),
       h('span', { textContent: 'Use Rescan to read the page, or Pick field to add one by clicking it.' })));
+  const rows = $('#rows');
+  rows.ondragover = (e) => {
+    const over = dragged && e.target.closest?.('.row[data-id]');
+    if (!over) return;
+    e.preventDefault();
+    const after = e.clientY > over.getBoundingClientRect().top + over.offsetHeight / 2;
+    clearDropMarks();
+    if (over.dataset.id !== dragged.id) over.classList.add(after ? 'drop-after' : 'drop-before');
+  };
+  rows.ondrop = (e) => {
+    const mark = rows.querySelector('.drop-before, .drop-after');
+    if (!dragged || !mark) return;
+    e.preventDefault();
+    // The dragged row is about to be redrawn, and a removed row may never get its dragend.
+    const moved = dragged;
+    dragged = null;
+    moveField(moved, state.draft.fields.find((x) => x.id === mark.dataset.id), mark.classList.contains('drop-after'));
+  };
   applyFilter();
+}
+
+// ---------- moving rows ----------
+
+let dragged = null;   // the field whose row is being dragged
+
+const clearDropMarks = () => document.querySelectorAll('#rows .drop-before, #rows .drop-after').forEach((r) => r.classList.remove('drop-before', 'drop-after'));
+
+// Puts `f` just before or after `target` in the sheet. Fields are filled in sheet order.
+function moveField(f, target, after) {
+  if (!target || target === f) return;
+  const fields = state.draft.fields.filter((x) => x !== f);
+  fields.splice(fields.indexOf(target) + (after ? 1 : 0), 0, f);
+  state.draft.fields = fields;
+  touch();
+  renderRows();
+  const row = document.querySelector(`#rows .row[data-id="${f.id}"]`);
+  row?.classList.add('moved');
+  row?.scrollIntoView({ block: 'nearest' });
+}
+
+// Keyboard version of dragging: swaps the row with its visible neighbour.
+function nudge(f, direction) {
+  const visible = [...document.querySelectorAll('#rows .row[data-id]:not([hidden])')].map((r) => r.dataset.id);
+  const neighbour = visible[visible.indexOf(f.id) + direction];
+  if (!neighbour) return;
+  moveField(f, state.draft.fields.find((x) => x.id === neighbour), direction > 0);
+  document.querySelector(`#rows .row[data-id="${f.id}"] .grip`)?.focus();
 }
 
 function applyFilter() {
@@ -145,11 +193,37 @@ function rowEl(f) {
   if (result) row.classList.add(TONE[result.status] ?? 'bad');
   row.classList.toggle('off', f.enabled === false);
 
+  // The handle makes the row draggable only while it is held, so text in the boxes can still be selected.
+  const grip = h('button', { className: 'grip', title: 'Drag to move this field. With the keyboard: Up and Down arrows.' }, icon('grip', 14));
+  grip.setAttribute('aria-label', `Move ${f.label || 'this field'}`);
+  grip.onpointerdown = () => {
+    row.draggable = true;
+    addEventListener('pointerup', () => { row.draggable = false; }, { once: true });
+  };
+  grip.onkeydown = (e) => {
+    if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+    e.preventDefault();
+    nudge(f, e.key === 'ArrowUp' ? -1 : 1);
+  };
+  row.ondragstart = (e) => {
+    dragged = f;
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', f.label || f.selector || '');
+    row.classList.add('dragging');
+  };
+  row.ondragend = () => {
+    dragged = null;
+    row.draggable = false;
+    row.classList.remove('dragging');
+    clearDropMarks();
+  };
+
   const on = h('input', {
     className: 'on', type: 'checkbox', checked: f.enabled !== false, title: 'Fill this field',
     onchange: () => { f.enabled = on.checked; row.classList.toggle('off', !on.checked); touch(); renderChrome(); },
   });
-  const label = h('input', { className: 'label', value: f.label || '', placeholder: 'Label', oninput: () => { f.label = label.value; touch(); } });
+  // In a narrow panel a long label is cut short, so the full text is also the tooltip.
+  const label = h('input', { className: 'label', value: f.label || '', title: f.label || '', placeholder: 'Label', oninput: () => { f.label = label.title = label.value; touch(); } });
   // Pasting from DevTools (Copy selector / JS path / XPath / outerHTML) is tidied up, then the row
   // re-reads the element so a dropdown gets its list of options.
   const tidy = guard(async () => {
@@ -162,7 +236,7 @@ function rowEl(f) {
   });
   selector.setAttribute('aria-label', 'Selector');
 
-  row.append(on,
+  row.append(grip, on,
     h('div', { className: 'labelbox' }, label, f.required ? h('span', { className: 'req', textContent: 'required', title: 'The page will not save without this field' }) : null),
     h('div', { className: 'tools' },
       iconButton('pick', 'Pick this field by clicking it on the page', guard(() => pick(f))),
@@ -189,43 +263,50 @@ function selectEl(pairs, value, onset) {
   return el;
 }
 
-function multiEl(f, onset) {
-  const chosen = new Set(Array.isArray(f.value) ? f.value : hasValue(f.value) ? [String(f.value)] : []);
-  const summary = h('summary');
-  const paint = () => {
-    summary.textContent = f.options.filter((o) => chosen.has(o.value)).map((o) => o.text).join(', ') || '— skip —';
-  };
-  paint();
-  return h('details', { className: 'value multi' }, summary, f.options.map((o) => {
-    const box = h('input', { type: 'checkbox', checked: chosen.has(o.value), onchange: () => {
-      if (box.checked) chosen.add(o.value); else chosen.delete(o.value);
-      onset([...chosen]);
-      paint();
-    } });
-    return h('label', {}, box, ' ' + o.text);
-  }));
+const recentsOf = (f) => state.recents[recentKey(state.draft.urlPattern, f.selector)] || [];
+
+// Remembers a value just chosen for a field, so every profile for this site offers it first next time.
+function remember(f, value) {
+  if (!f.selector || !value || typeof value !== 'string' || isTemplate(value) || f.inputType === 'password' || value.length > 120) return;
+  const key = recentKey(state.draft.urlPattern, f.selector);
+  state.recents[key] = [value, ...(state.recents[key] || []).filter((v) => v !== value)].slice(0, 6);
+  pushRecent(key, value);
 }
 
-// The value cell matches the field: a dropdown for picklists and radios, a checklist for
-// multi-selects, check / uncheck for a checkbox, otherwise a text box. A value containing
-// {{tokens}} is always shown as text, whatever the field is.
+// The value cell matches the field: a searchable list for picklists and radios (several can be
+// ticked for multi-selects), check / uncheck for a checkbox, otherwise a text box. A value
+// containing {{tokens}} is always shown as text, whatever the field is.
 function valueEl(f) {
   const onset = (v) => { f.value = v; touch(); };
   const skip = ['', '— skip —'];
   if (!isTemplate(f.value)) {
     if (f.kind === 'check') return selectEl([skip, ['true', '☑ Check'], ['false', '☐ Uncheck']], f.value, onset);
-    if (f.options?.length && f.kind === 'multi') return multiEl(f, onset);
-    if (f.options?.length && (f.kind === 'select' || f.kind === 'radio')) return selectEl([skip, ...f.options.map((o) => [o.value, o.text])], f.value, onset);
+    if (f.options?.length && ['select', 'radio', 'multi'].includes(f.kind)) {
+      const multiple = f.kind === 'multi';
+      return pickerEl({
+        options: f.options, value: f.value, multiple, recents: () => recentsOf(f), label: `Value for ${f.label || 'this field'}`,
+        onchange: (v) => { onset(v); if (!multiple) remember(f, v); },
+      });
+    }
   }
   const el = h(f.multiline ? 'textarea' : 'input', {
     className: 'value', value: asText(f.value), placeholder: 'Value',
     oninput: () => { onset(el.value); el.classList.toggle('template', isTemplate(el.value)); },
     // Once the tokens are gone, a picklist goes back to being a dropdown.
-    onchange: () => { if (hasChoices(f) && !isTemplate(f.value)) replaceRow(f); renderChrome(); },
+    onchange: () => {
+      if (!f.multiline) remember(f, el.value.trim());
+      if (hasChoices(f) && !isTemplate(f.value)) replaceRow(f);
+      renderChrome();
+    },
   });
   el.classList.toggle('template', isTemplate(f.value));
   if (f.multiline) el.rows = 2; else el.type = f.inputType === 'password' && !isTemplate(f.value) ? 'password' : 'text';
-  return el;
+  // Values typed into this field before are offered as suggestions while typing.
+  const recent = f.multiline || f.inputType === 'password' ? [] : recentsOf(f);
+  if (!recent.length) return el;
+  const list = h('datalist', { id: 'recent-' + f.id }, recent.map((value) => h('option', { value })));
+  el.setAttribute('list', list.id);
+  return [el, list];
 }
 
 // The "{ }" menu: values that are worked out at fill time.
@@ -327,9 +408,19 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
   }
 });
 
+// Said after a scrolling scan that did not reach the end of the page.
+export const scanNote = (stopped) => ({
+  user: ' The scroll was stopped early, so fields further down may be missing.',
+  panel: ' The scroll was stopped early, so fields further down may be missing.',
+  time: ' The scroll hit its 20-second limit, so fields further down may be missing.',
+  endless: ' The page kept growing as it scrolled, so the scan stopped following it.',
+}[stopped] || '');
+
 async function rescan() {
   const tab = await currentTab();
-  const scanned = await scanTab(tab.id, { includeHidden: state.includeHidden });
+  const scroll = state.settings.scrollScan;
+  if (scroll) toast('Scrolling the page to find every field. Click the page or press Esc on it to stop.', 'sticky');
+  const { fields: scanned, stopped } = await scanPage(tab.id, { includeHidden: state.includeHidden, scroll });
   let added = 0;
   for (const s of scanned) {
     const existing = state.draft.fields.find((f) => f.selector === s.selector);
@@ -339,7 +430,7 @@ async function rescan() {
   if (added) touch();
   renderRows();
   renderChrome();
-  toast(added ? `Added ${plural(added, 'new field')}.` : 'No new fields on the page.');
+  toast((added ? `Added ${plural(added, 'new field')}.` : 'No new fields on the page.') + scanNote(stopped), stopped ? 'bad' : '');
 }
 
 async function grabValues() {

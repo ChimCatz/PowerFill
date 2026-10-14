@@ -4,6 +4,7 @@
 // see which cells the page will not accept, and choose which row is filled next.
 
 import { $, h, mount, icon, toast, guard, confirmClick, plural } from './dom.js';
+import { pickerEl } from './picker.js';
 import { parseTable, autoMatch, checkData } from '../lib/table.js';
 import { norm, mappedColumn, columnToken, columnsIn, tokensIn } from '../lib/template.js';
 
@@ -68,17 +69,17 @@ export function renderDataTab(pane, { draft, touch, refresh }) {
   // One line per column: which field does it go into?
   const matching = columns.map((column) => {
     const current = draft.fields.find((f) => norm(mappedColumn(f.value) ?? '\0') === norm(column)) || draft.fields.find((f) => usesColumn(f, column));
-    const choice = h('select', { onchange: () => {
-      for (const f of draft.fields) if (norm(mappedColumn(f.value) ?? '\0') === norm(column)) f.value = '';
-      const target = draft.fields.find((f) => f.id === choice.value);
-      if (target) Object.assign(target, { value: columnToken(column), enabled: true });
-      touch();
-      refresh();
-    } },
-      h('option', { value: '', textContent: '— not used —' }),
-      draft.fields.map((f) => h('option', { value: f.id, textContent: f.label || f.selector })));
-    choice.value = current?.id || '';
-    choice.setAttribute('aria-label', `Field for column ${column}`);
+    const choice = pickerEl({
+      options: draft.fields.map((f) => ({ value: f.id, text: f.label || f.selector })), value: current?.id || '',
+      placeholder: '— not used —', allowCustom: false, label: `Field for column ${column}`,
+      onchange: (id) => {
+        for (const f of draft.fields) if (norm(mappedColumn(f.value) ?? '\0') === norm(column)) f.value = '';
+        const target = draft.fields.find((f) => f.id === id);
+        if (target) Object.assign(target, { value: columnToken(column), enabled: true });
+        touch();
+        refresh();
+      },
+    });
     return h('div', { className: 'match' + (current ? '' : ' unused') },
       h('div', { className: 'match-col' }, h('strong', { textContent: column }), h('span', { className: 'muted', textContent: rows[cursor]?.[columns.indexOf(column)] || rows[0][columns.indexOf(column)] || '' })),
       h('span', { className: 'arrow', textContent: '→' }),
