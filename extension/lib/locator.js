@@ -1,3 +1,5 @@
+// PowerFill - Copyright (c) 2026 ChimCatz. MIT License.
+//
 // Turns whatever DevTools' "Copy" menu produced into something the engine can look up.
 // Copy selector / XPath / full XPath pass through untouched; JS path and element / outerHTML are converted.
 

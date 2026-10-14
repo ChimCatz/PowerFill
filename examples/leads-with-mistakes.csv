@@ -1,0 +1,6 @@
+First name,Last name,Company,Work email,Phone,Country,Lead status,Industry,Follow-up date,Employees,Company size,Interested in,Notes,Opted in to email updates
+Maria,Santos,Northwind Trading,maria.santos@northwind.example,+65 6123 4567,Singapore,Call back - interested,IT / Software,2026-11-02,120,50-249,Security; Cloud,This row is fine,yes
+Pedro,Alvarez,Sunrise Foods,pedro.alvarez-at-sunrise.example,+52 55 5550 0101,Mexico,Call back - maybe,Retail,2026-11-03,80,50-249,Cloud,Status is not on the list and the email has no @,no
+Hana,Kim,,hana.kim@daehan.example,+82 2 5550 0188,South Korea,New,Fintech,2026-11-04,5200,5000+,AI,Company is blank and two picklist values do not exist,yes
+Luca,Bianchi,Alpine Tools,luca@alpinetools.example,+39 02 5550 0144,Italy,Qualified,Manufacturing,next week,about fifty,1-49,Security; Blockchain,Date and number are words and one interest is unknown,maybe
+Sara,Lind,Nordlys Energy,sara.lind@nordlys.example,call me,Norway,New,Healthcare,2026-11-06,45,1-49,Networking,The phone is not a phone number,no

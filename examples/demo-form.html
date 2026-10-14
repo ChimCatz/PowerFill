@@ -1,0 +1,70 @@
+<!doctype html>
+<!-- A made-up lead form for trying PowerFill out. None of the people or companies are real. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>New lead · Demo CRM</title>
+<style>
+  body { margin: 0; background: #eef1f5; color: #1c2330; font: 14px/1.4 system-ui, "Segoe UI", sans-serif; }
+  header { background: #243447; color: #fff; padding: 14px 28px; font-weight: 600; letter-spacing: .02em; }
+  header span { opacity: .6; font-weight: 400; margin-left: 10px; }
+  form { max-width: 720px; margin: 24px auto; padding: 22px 28px 26px; background: #fff; border: 1px solid #d9dee7; border-radius: 10px; }
+  h1 { margin: 0 0 16px; font-size: 19px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 22px; }
+  .field { display: grid; gap: 5px; align-content: start; }
+  .wide { grid-column: 1 / -1; }
+  label.cap, legend { font-size: 12px; color: #667085; font-weight: 600; padding: 0; }
+  input[type=text], input[type=email], input[type=tel], input[type=number], input[type=date], select, textarea {
+    font: inherit; padding: 8px 10px; border: 1px solid #c9d0db; border-radius: 6px; background: #fff; width: 100%; box-sizing: border-box; }
+  textarea { resize: none; }
+  fieldset { border: 0; margin: 0; padding: 0; display: grid; gap: 5px; align-content: start; }
+  .choices { display: flex; flex-wrap: wrap; gap: 6px 16px; padding: 6px 0; }
+  .req::after { content: " *"; color: #d92d20; }
+  .bar { display: flex; align-items: center; gap: 14px; margin-top: 20px; }
+  button { padding: 9px 20px; font: inherit; font-weight: 600; color: #fff; background: #16a34a; border: 0; border-radius: 6px; cursor: pointer; }
+  #saved { color: #15803d; font-weight: 600; }
+</style>
+</head>
+<body>
+<header>Demo CRM <span>Leads / New</span></header>
+<form id="lead">
+  <h1>Creating new lead</h1>
+  <div class="grid">
+    <div class="field"><label class="cap req" for="first">First name</label><input type="text" id="first" name="first_name" required></div>
+    <div class="field"><label class="cap req" for="last">Last name</label><input type="text" id="last" name="last_name" required></div>
+    <div class="field"><label class="cap req" for="company">Company</label><input type="text" id="company" name="company" required></div>
+    <div class="field"><label class="cap req" for="email">Work email</label><input type="email" id="email" name="email" required></div>
+    <div class="field"><label class="cap" for="phone">Phone</label><input type="tel" id="phone" name="phone" pattern="[+0-9 \(\)\-]{6,}" title="Digits, spaces, + ( ) and - only"></div>
+    <div class="field"><label class="cap" for="country">Country</label><input type="text" id="country" name="country"></div>
+    <div class="field"><label class="cap req" for="status">Lead status</label>
+      <select id="status" name="lead_status" required><option value="">Select an option</option><option>New</option><option>Call back - interested</option><option>Call back - busy</option><option>Qualified</option><option>Not interested</option></select></div>
+    <div class="field"><label class="cap" for="industry">Industry</label>
+      <select id="industry" name="industry"><option value="">Select an option</option><option>Banking / Financial Services</option><option>Education</option><option>Healthcare</option><option>IT / Software</option><option>Manufacturing</option><option>Retail</option></select></div>
+    <div class="field"><label class="cap" for="date">Lead date</label><input type="text" id="date" name="lead_date" data-date-format="dd/mm/yyyy" placeholder="dd/mm/yyyy"></div>
+    <div class="field"><label class="cap" for="followup">Follow-up date</label><input type="date" id="followup" name="follow_up"></div>
+    <div class="field"><label class="cap" for="employees">Employees</label><input type="number" id="employees" name="employees" min="1"></div>
+    <fieldset><legend>Company size</legend><div class="choices">
+      <label><input type="radio" name="size" value="1-49"> 1-49</label>
+      <label><input type="radio" name="size" value="50-249"> 50-249</label>
+      <label><input type="radio" name="size" value="250+"> 250+</label></div></fieldset>
+    <fieldset class="wide"><legend>Interested in</legend><div class="choices">
+      <label><input type="checkbox" name="interest[]" value="security"> Security</label>
+      <label><input type="checkbox" name="interest[]" value="cloud"> Cloud</label>
+      <label><input type="checkbox" name="interest[]" value="ai"> AI</label>
+      <label><input type="checkbox" name="interest[]" value="networking"> Networking</label></div></fieldset>
+    <div class="field wide"><label class="cap" for="notes">Notes</label><textarea id="notes" name="notes" rows="3"></textarea></div>
+    <div class="field wide"><label><input type="checkbox" name="optin" id="optin"> Opted in to email updates</label></div>
+  </div>
+  <div class="bar"><button>Save lead</button><span id="saved" hidden>Lead saved (nothing is sent anywhere).</span></div>
+</form>
+<script>
+  // The form only pretends to save, then clears itself like a CRM's "new record" screen would.
+  document.getElementById('lead').addEventListener('submit', (e) => {
+    e.preventDefault();
+    document.getElementById('saved').hidden = false;
+    setTimeout(() => { document.getElementById('saved').hidden = true; e.target.reset(); }, 1200);
+  });
+</script>
+</body>
+</html>

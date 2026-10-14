@@ -1,0 +1,31 @@
+<!doctype html><html><head><meta charset=utf-8><title>Widget test</title>
+<link rel=stylesheet href="https://cdnjs.cloudflare.com/ajax/libs/select2/3.5.4/select2.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/1.12.4/jquery.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/select2/3.5.4/select2.min.js"></script>
+</head><body>
+<form id=f>
+<table><tr><td class=fieldLabel>Lead Status <span>*</span></td><td class=fieldValue><select name=leadstatus class=select2 style="width:220px"><option value="">Select an Option<option value="Call Back - Busy">Call Back - Busy<option value="Lead Converted">Lead Converted</select></td>
+<td class=fieldLabel>Products</td><td><select name="prod[]" multiple class=select2 style="width:220px"><option>Alpha<option>Beta<option>Gamma</select></td></tr></table>
+<p>Gender: <label><input type=radio name=gender value=m> Male</label> <label><input type=radio name=gender value=f> Female</label></p>
+<fieldset><legend>Interests</legend><label><input type=checkbox name="int[]" value=1> Security</label><label><input type=checkbox name="int[]" value=2 checked> Cloud</label><label><input type=checkbox name="int[]" value=3> AI</label></fieldset>
+<label for=dob>Date of birth</label><input type=date id=dob>
+<div><label>Notes</label><div contenteditable=true id=notes style="border:1px solid #ccc;min-height:20px"></div></div>
+<input type=text name=website_hp style="display:none">
+<div id=host></div>
+<div><span id=lbl-agree>Agree to terms</span><button type=button role=checkbox aria-checked=false aria-labelledby=lbl-agree id=agree onclick="this.setAttribute('aria-checked', this.getAttribute('aria-checked')!=='true')">[ ]</button></div>
+<div><label id=lc>Country</label><button type=button role=combobox id=combo aria-labelledby=lc>Choose</button><ul role=listbox id=lb hidden><li role=option>Philippines</li><li role=option>Singapore</li></ul></div>
+<input id=react placeholder="React-like">
+<label>Lead Date <input name=leaddate data-date-format="mm-dd-yyyy"></label>
+</form>
+<iframe src="frame.html" style="width:300px;height:80px"></iframe>
+<script>
+ window.hasSelect2 = !!(window.jQuery && jQuery.fn.select2);
+ if (hasSelect2) jQuery('select.select2').select2();
+ host.attachShadow({mode:'open'}).innerHTML = '<label>Shadow email <input name=semail></label>';
+ combo.addEventListener('mousedown', () => lb.hidden = false);
+ lb.addEventListener('click', e => { combo.textContent = e.target.textContent; lb.hidden = true; });
+ window.changes = []; document.querySelector('select[name=leadstatus]').addEventListener('change', e => changes.push(e.target.value));
+ const desc = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value'); let tracked = '';
+ Object.defineProperty(react, 'value', { get(){ return desc.get.call(this); }, set(v){ tracked = v; desc.set.call(this, v); } });
+ react.addEventListener('input', () => { if (react.value !== tracked) { tracked = react.value; window.reactChanged = react.value; } });
+</script></body></html>

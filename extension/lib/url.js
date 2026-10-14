@@ -1,3 +1,5 @@
+// PowerFill - Copyright (c) 2026 ChimCatz. MIT License.
+//
 // URL patterns decide which profiles are offered on which page.
 // "https://site.com/leads/*/edit?module=Leads" means: that path (* matches anything) and the page's
 // query string must contain module=Leads. Extra query parameters on the page are ignored.

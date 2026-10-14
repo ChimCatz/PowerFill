@@ -1,5 +1,7 @@
-// PowerFill page engine. Injected on demand into every frame of the tab.
-// Plain DOM code: scan fields, fill fields, highlight a field, and an element picker.
+// PowerFill - Copyright (c) 2026 ChimCatz. MIT License.
+//
+// Page engine. Injected on demand into every frame of the tab.
+// Plain DOM code: scan fields, fill and undo, highlight a field, an element picker, and a prompt.
 (() => {
   window.__powerfill?.stopPicker?.();
 
@@ -22,6 +24,7 @@
   const YES = new Set(['true', 'yes', 'y', '1', 'on', 'x', 'check', 'checked']);
   const NO = new Set(['false', 'no', 'n', '0', 'off', 'uncheck', 'unchecked']);
   const OK_COLOR = '#16a34a';
+  const WARN_COLOR = '#d97706';
   const PICK_COLOR = '#1273c4';
 
   const clean = (s) => String(s ?? '').replace(/\s+/g, ' ').trim();
@@ -316,6 +319,7 @@
       field.options = [...el.options].filter((o) => o.value !== '' && !o.disabled).slice(0, 500)
         .map((o) => ({ value: o.value, text: clean(o.textContent) || o.value }));
       field.current = el.multiple ? [...el.selectedOptions].map((o) => o.value).filter(Boolean) : el.value;
+      field.empty = !field.current.length;
     } else if (kind === 'radio' || kind === 'multi') {
       field.options = members.map((m) => ({ value: m.value || '', text: optionText(m) }));
       // Radios that all post "on", or share a value, can only be told apart by their caption.
@@ -323,12 +327,17 @@
       if (values.some((v) => !v || v === 'on') || new Set(values).size < values.length) field.options.forEach((o) => { o.value = o.text; });
       const on = field.options.filter((_, i) => isChecked(members[i])).map((o) => o.value);
       field.current = kind === 'radio' ? on[0] || '' : on;
+      field.empty = !on.length;
     } else if (kind === 'check') {
       field.current = isChecked(el) ? 'true' : '';
+      field.empty = !field.current;
     } else if (kind === 'text') {
       field.inputType = el.tagName === 'INPUT' ? el.type : 'text';
       field.multiline = el.tagName !== 'INPUT';
-      field.current = field.inputType === 'password' ? '' : 'value' in el ? el.value : clean(el.innerText);
+      const text = 'value' in el ? el.value : clean(el.innerText);
+      // Passwords are never read back, but whether one has been typed is still reported.
+      field.current = field.inputType === 'password' ? '' : text;
+      field.empty = !text;
     }
     return field;
   }
@@ -389,6 +398,25 @@
     });
   }
 
+  // Puts text into an <input> / <textarea> and tells the page about it the way typing would.
+  function setText(el, value) {
+    // The prototype setter bypasses React/Vue value tracking, so their change handlers still run.
+    const proto = el.tagName === 'INPUT' ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype;
+    Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, value);
+    el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: value }));
+    el.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
+    fire(el, 'change');
+    el.dispatchEvent(new FocusEvent('blur'));
+    el.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
+  }
+
+  // What the page thinks of the value it was just given: too long, wrong email format, and so on.
+  function complaint(el, value) {
+    if (el.maxLength > 0 && value.length > el.maxLength) return `Longer than the ${el.maxLength} characters this field allows`;
+    if (el.validity && !el.validity.valid && !el.validity.valueMissing) return el.validationMessage;
+    return el.getAttribute('aria-invalid') === 'true' ? 'The page marked this value as invalid' : '';
+  }
+
   function fillText(el, value) {
     if (el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA') {
       // Rich-text editors only notice edits that come through the editing pipeline.
@@ -404,16 +432,10 @@
       const parsed = new Date(value);
       if (!isNaN(parsed)) value = formatDate(parsed, 'yyyy-mm-dd');
     }
-    // The prototype setter bypasses React/Vue value tracking, so their change handlers still run.
-    const proto = el.tagName === 'INPUT' ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype;
-    Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, value);
-    el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: value }));
-    el.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
-    fire(el, 'change');
-    el.dispatchEvent(new FocusEvent('blur'));
-    el.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
-    if (value !== '' && el.value === '') return fail('The field rejected this value (check the format)');
-    return done(el);
+    setText(el, value);
+    if (value !== '' && el.value === '') return fail(`This ${el.type} field does not accept “${value}”`);
+    const problem = value === '' ? '' : complaint(el, value);
+    return problem ? { status: 'warn', detail: problem, el } : done(el);
   }
 
   function matchOption(options, wanted) {
@@ -437,6 +459,12 @@
       if (!hit) return fail(`No option “${wanted}” in this list`, 'nooption');
       hit.selected = true;
     }
+    announceSelect(el);
+    return missing.length ? fail(`No option “${missing.join('”, “')}” in this list`, 'nooption') : done(el);
+  }
+
+  // Tells the page, and any dropdown widget drawn over the <select>, that the selection changed.
+  function announceSelect(el) {
     fire(el, 'input');
     fire(el, 'change');
     // Chosen needs to be told; Select2 follows the change event, with a manual repaint as a safety net.
@@ -448,7 +476,6 @@
       shown.textContent = text;
       shown.closest('.select2-default')?.classList.remove('select2-default');
     }
-    return missing.length ? fail(`No option “${missing.join('”, “')}” in this list`, 'nooption') : done(el);
   }
 
   // Radio groups pick one member; checkbox groups end up with exactly the listed members ticked.
@@ -489,19 +516,66 @@
     if (el.disabled) return fail('This field is disabled on the page');
     const members = els.length > 1 ? els : groupOf(el);
     const flag = Array.isArray(f.value) ? undefined : YES.has(norm(f.value)) ? true : NO.has(norm(f.value)) ? false : undefined;
+    const restore = snapshot(el, kind === 'check' && flag !== undefined ? els : members);
+    if (restore) window.__powerfillUndo.push(restore);
     let result;
     if (el.tagName === 'SELECT') result = fillSelect(el, f.value);
     else if (kind === 'check' && flag !== undefined) { els.forEach((e) => setChecked(e, flag)); result = done(el); }
+    else if (kind === 'check' && members.length === 1) result = fail(`A tick box needs yes or no, not “${asText(f.value)}”`);
     else if (kind === 'check') result = fillChoice(members, asList(f.value), false);
     else if (kind === 'radio' && flag === true && members.length === 1) { setChecked(el, true); result = done(el); }
     else if (kind === 'radio') result = fillChoice(members, [asText(f.value)], true);
     else if (kind === 'combo') result = await fillCombo(el, asText(f.value));
     else result = fillText(el, expand(asText(f.value), el));
-    if (result.status === 'filled') flash(result.el, OK_COLOR);
+    if (result.el) flash(result.el, result.status === 'warn' ? WARN_COLOR : OK_COLOR);
     return { status: result.status, detail: result.detail };
   }
 
-  async function fill({ fields }) {
+  // Captures how a field looks now and returns a function that puts it back.
+  function snapshot(el, members) {
+    const kind = kindOf(el);
+    if (el.tagName === 'SELECT') {
+      const before = [...el.options].map((o) => o.selected);
+      return () => {
+        [...el.options].forEach((o, i) => { o.selected = !!before[i]; });
+        announceSelect(el);
+      };
+    }
+    if (kind === 'check' || kind === 'radio') {
+      const before = members.map(isChecked);
+      return () => members.forEach((m, i) => {
+        if (isChecked(m) === before[i]) return;
+        if (before[i] || kind === 'check') return setChecked(m, before[i]);
+        // A radio can't be clicked off; this group had nothing chosen before the fill.
+        m.checked = false;
+        fire(m, 'change');
+      });
+    }
+    if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
+      const before = el.value;
+      return () => setText(el, before);
+    }
+    if (kind === 'text') {
+      const before = el.innerHTML;
+      return () => { el.innerHTML = before; fire(el, 'input'); };
+    }
+    return null;
+  }
+
+  // Puts back everything the last fill changed in this frame. The list lives on `window`
+  // because the engine is injected afresh for every call.
+  function undo() {
+    const steps = window.__powerfillUndo || [];
+    window.__powerfillUndo = [];
+    for (const restore of steps.reverse()) {
+      try { restore(); } catch { /* the element has gone; nothing to put back */ }
+    }
+    return { frame: FRAME, undone: steps.length };
+  }
+
+  // `keepUndo` is set when a second pass retries fields in other frames as part of the same fill.
+  async function fill({ fields, keepUndo }) {
+    if (!keepUndo || !window.__powerfillUndo) window.__powerfillUndo = [];
     const results = [];
     for (const f of fields) {
       if (f.frame && f.frame !== 'any' && f.frame !== FRAME) { results.push({ id: f.id, status: 'otherframe' }); continue; }
@@ -587,5 +661,52 @@
     };
   }
 
-  window.__powerfill = { scan, fill, highlight, startPicker, stopPicker };
+  // ---------- prompt ----------
+
+  const ASK_CSS = `
+    :host { all: initial; position: fixed; inset: 0; z-index: 2147483647; display: grid; place-items: start center;
+      padding-top: 12vh; background: rgb(15 23 42 / .45); font: 14px/1.4 system-ui, "Segoe UI", sans-serif; }
+    form { width: min(360px, 90vw); padding: 18px; background: #fff; color: #1c2330; border-radius: 12px;
+      box-shadow: 0 20px 50px rgb(0 0 0 / .35); display: grid; gap: 12px; }
+    h1 { margin: 0; font-size: 15px; }
+    label { display: grid; gap: 4px; font-size: 12px; font-weight: 600; color: #667085; }
+    input { font: inherit; color: #1c2330; padding: 8px 10px; border: 1px solid #c9d0db; border-radius: 6px; }
+    input:focus { outline: 2px solid #1273c4; outline-offset: -1px; }
+    footer { display: flex; justify-content: flex-end; gap: 8px; }
+    button { font: inherit; padding: 7px 16px; border-radius: 6px; border: 1px solid #c9d0db; background: #fff; color: #1c2330; cursor: pointer; }
+    button.go { background: #1273c4; border-color: #1273c4; color: #fff; font-weight: 600; }`;
+
+  // Asks for the {{ask:...}} values on the page itself. Used when a fill is started with the
+  // keyboard shortcut, where the side panel may not be open. Resolves to { answers } or { answers: null }.
+  function ask({ labels, defaults = {} }) {
+    if (FRAME !== 'top') return null;
+    return new Promise((resolve) => {
+      const make = (tag, props = {}) => Object.assign(document.createElement(tag), props);
+      const host = make('div');
+      host.id = 'powerfill-ask';
+      const root = host.attachShadow({ mode: 'open' });
+      // A constructed stylesheet is not blocked by the page's Content Security Policy.
+      const sheet = new CSSStyleSheet();
+      sheet.replaceSync(ASK_CSS);
+      root.adoptedStyleSheets = [sheet];
+      const inputs = labels.map((label) => make('input', { name: label, value: defaults[label] ?? '', autocomplete: 'off' }));
+      const form = make('form');
+      const footer = make('footer');
+      const cancel = make('button', { type: 'button', textContent: 'Cancel' });
+      footer.append(cancel, make('button', { className: 'go', textContent: 'Fill' }));
+      form.append(make('h1', { textContent: 'PowerFill needs a few values' }),
+        ...labels.map((label, i) => { const row = make('label', { textContent: label }); row.append(inputs[i]); return row; }), footer);
+      root.append(form);
+      const finish = (answers) => { host.remove(); resolve({ answers }); };
+      form.addEventListener('submit', (e) => { e.preventDefault(); finish(Object.fromEntries(inputs.map((i) => [i.name, i.value]))); });
+      cancel.addEventListener('click', () => finish(null));
+      // Keep the page's own shortcuts from firing while the user types an answer.
+      host.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Escape') finish(null); });
+      document.documentElement.append(host);
+      inputs[0].focus();
+      inputs[0].select();
+    });
+  }
+
+  window.__powerfill = { scan, fill, undo, highlight, startPicker, stopPicker, ask };
 })();

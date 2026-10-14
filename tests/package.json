@@ -1,0 +1,12 @@
+{
+  "name": "powerfill-tests",
+  "private": true,
+  "description": "Drives the unpacked extension in headless Chrome against the example form.",
+  "scripts": {
+    "test": "node run.js",
+    "screenshots": "node screenshots.js"
+  },
+  "devDependencies": {
+    "puppeteer-core": "^25.13.0"
+  }
+}
