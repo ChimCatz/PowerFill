@@ -1,0 +1,591 @@
+// PowerFill page engine. Injected on demand into every frame of the tab.
+// Plain DOM code: scan fields, fill fields, highlight a field, and an element picker.
+(() => {
+  window.__powerfill?.stopPicker?.();
+
+  // Identifies which frame a field lives in, so a profile fills it in the same frame later.
+  const FRAME = window === window.top ? 'top'
+    : /^(about|blob|data):/.test(location.protocol) ? 'frame:' + (window.name || 'inline')
+    : location.origin + location.pathname;
+
+  const SKIP_TYPES = new Set(['hidden', 'submit', 'button', 'reset', 'image', 'file']);
+  const NATIVE = 'input,textarea,select';
+  const CANDIDATES = NATIVE + ',[contenteditable=""],[contenteditable="true"],[contenteditable="plaintext-only"],' +
+    '[role="textbox"],[role="combobox"],[role="checkbox"],[role="switch"],[role="radio"]';
+  // Dropdown libraries (Select2, Chosen, Tom Select, Selectize...) hide the real <select> and draw
+  // their own box next to it. Their internal search inputs are not form fields.
+  const WIDGETS = '.select2-container,.chosen-container,.ts-wrapper,.selectize-control,.nice-select';
+  const WIDGET_PARTS = WIDGETS + ',.select2-drop,.select2-dropdown,.choices__list,.bs-searchbox';
+  const TEXT_SKIP = 'script,style,noscript,select,textarea,button,svg,' + WIDGET_PARTS;
+  const AUTO_ID = /^(s2id_|select2-|ember|react-|mui-|mat-|radix-|headlessui-|:r|ext-gen|yui_|gwt-|j_id)|\d{5,}|[0-9a-f]{8}-[0-9a-f]{4}-|^\d/i;
+  const STABLE_ATTRS = ['data-testid', 'data-test', 'data-qa', 'data-cy', 'data-fieldname', 'data-field', 'data-key', 'data-name'];
+  const YES = new Set(['true', 'yes', 'y', '1', 'on', 'x', 'check', 'checked']);
+  const NO = new Set(['false', 'no', 'n', '0', 'off', 'uncheck', 'unchecked']);
+  const OK_COLOR = '#16a34a';
+  const PICK_COLOR = '#1273c4';
+
+  const clean = (s) => String(s ?? '').replace(/\s+/g, ' ').trim();
+  const norm = (s) => clean(s).toLowerCase();
+  const quote = (v) => '"' + String(v).replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"';
+  const asText = (v) => (Array.isArray(v) ? v.join(', ') : String(v ?? ''));
+  const asList = (v) => (Array.isArray(v) ? v : String(v ?? '').split(/\s*[;|\n]\s*/)).filter(Boolean);
+
+  function tidyLabel(s) {
+    s = clean(s).replace(/^[*:\s]+|[\s*:]+$/g, '');
+    return s.length > 80 ? s.slice(0, 77) + '…' : s;
+  }
+
+  function pretty(s) {
+    s = clean(String(s || '').replace(/\[\]$/, '').replace(/[_\-.]+/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2'));
+    return s && s[0].toUpperCase() + s.slice(1);
+  }
+
+  function shadowOf(el) {
+    try { return globalThis.chrome?.dom?.openOrClosedShadowRoot?.(el) || el.shadowRoot; }
+    catch { return el.shadowRoot; }
+  }
+
+  function deepAll(root, selector, out = []) {
+    out.push(...root.querySelectorAll(selector));
+    for (const el of root.querySelectorAll('*')) {
+      const shadow = shadowOf(el);
+      if (shadow) deepAll(shadow, selector, out);
+    }
+    return out;
+  }
+
+  // ---------- classifying elements ----------
+
+  function kindOf(el) {
+    const tag = el.tagName;
+    if (tag === 'SELECT') return el.multiple ? 'multi' : 'select';
+    if (tag === 'TEXTAREA') return 'text';
+    if (tag === 'INPUT') {
+      const type = (el.getAttribute('type') || 'text').toLowerCase();
+      if (type === 'checkbox') return 'check';
+      if (type === 'radio') return 'radio';
+      return SKIP_TYPES.has(type) ? null : 'text';
+    }
+    const role = el.getAttribute('role');
+    if (role === 'checkbox' || role === 'switch') return 'check';
+    if (role === 'radio') return 'radio';
+    if (el.isContentEditable || role === 'textbox') return 'text';
+    if (role === 'combobox') return 'combo';
+    return null;
+  }
+
+  const isWidgetPart = (el) => el.tagName !== 'SELECT' && !!el.closest(WIDGET_PARTS);
+  const isField = (el) => !!kindOf(el) && !isWidgetPart(el) && !el.disabled;
+  const isChecked = (el) => ('checked' in el ? el.checked : el.getAttribute('aria-checked') === 'true');
+
+  function widgetOf(el) {
+    if (el.tagName !== 'SELECT') return null;
+    for (const sib of [el.previousElementSibling, el.nextElementSibling]) if (sib?.matches(WIDGETS)) return sib;
+    return el.closest('.bootstrap-select,.choices,.nice-select');
+  }
+
+  function rendered(el) {
+    if (!el?.isConnected) return false;
+    if (el.checkVisibility && !el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })) return false;
+    const r = el.getBoundingClientRect();
+    if (r.width <= 1 && r.height <= 1) return false;
+    return r.right + scrollX >= 0 && r.bottom + scrollY >= 0;
+  }
+
+  // Hidden text inputs are usually spam honeypots, so they are left out unless asked for.
+  // Selects and checkboxes are often hidden behind a styled replacement and still count.
+  function isVisible(el) {
+    if (rendered(el)) return true;
+    if (el.tagName === 'SELECT') return rendered(widgetOf(el));
+    if (el.tagName === 'INPUT' && (el.type === 'checkbox' || el.type === 'radio')) {
+      return [...(el.labels || [])].some(rendered) || rendered(el.parentElement);
+    }
+    return false;
+  }
+
+  // Radios (always) and same-named checkboxes (two or more) are treated as one field.
+  function groupOf(el) {
+    if (el.tagName === 'INPUT' && (el.type === 'radio' || el.type === 'checkbox') && el.name) {
+      const same = [...el.getRootNode().querySelectorAll(`input[type="${el.type}"][name=${quote(el.name)}]`)]
+        .filter((m) => m.form === el.form && !m.disabled);
+      if (el.type === 'radio' || same.length > 1) return same;
+    }
+    if (el.getAttribute('role') === 'radio') {
+      const group = el.closest('[role="radiogroup"]');
+      if (group) return [...group.querySelectorAll('[role="radio"]')];
+    }
+    return [el];
+  }
+
+  // ---------- labels ----------
+
+  // Visible text inside `root`, ignoring the given elements and the contents of other controls.
+  function textAround(root, exclude) {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    let out = '';
+    for (let n = walker.nextNode(); n && out.length < 400; n = walker.nextNode()) {
+      const p = n.parentElement;
+      if (!p || p.closest(TEXT_SKIP) || exclude.some((x) => x.contains(p))) continue;
+      out += ' ' + n.nodeValue;
+    }
+    return clean(out);
+  }
+
+  const hasOtherFields = (node, set) => [...node.querySelectorAll(NATIVE)].some((f) => !set.has(f) && isField(f));
+
+  function precedingText(node) {
+    for (let s = node.previousSibling, i = 0; s && i < 4; s = s.previousSibling, i++) {
+      if (s.nodeType === Node.TEXT_NODE) {
+        if (clean(s.nodeValue)) return clean(s.nodeValue);
+      } else if (s.nodeType === Node.ELEMENT_NODE && !s.matches('br')) {
+        // Text that sits with another field is that field's caption, not ours.
+        if (s.matches(CANDIDATES) || s.querySelector(CANDIDATES)) return '';
+        const text = textAround(s, []);
+        if (text) return text.length <= 160 ? text : '';
+      }
+    }
+    return '';
+  }
+
+  // Finds the caption for a field with no <label>: the text of the smallest wrapper that holds only
+  // this field, else the neighbouring table cell (vtiger and most CRMs). Also returns the outermost
+  // wrapper it reached, so the caller can fall back to the text just before it.
+  function contextLabel(members) {
+    const set = new Set(members);
+    const grouped = members.length > 1;
+    const exclude = grouped ? [...members, ...members.flatMap((m) => [...(m.labels || [])])] : members;
+    let node = members[0].parentElement;
+    while (grouped && node && !members.every((m) => node.contains(m))) node = node.parentElement;
+    let last = grouped ? null : members[0];
+    for (let depth = 0; node && node !== document.documentElement && depth < 4; depth++, node = node.parentElement) {
+      // A wrapper full of links and buttons is a navbar or toolbar, not a field's caption.
+      if (node.querySelectorAll('a,button').length > 3) break;
+      const crowded = hasOtherFields(node, set);
+      if (!crowded) {
+        const legend = node.matches('fieldset') ? node.querySelector('legend') : null;
+        const text = legend ? clean(legend.textContent) : textAround(node, exclude);
+        if (text) return { text: text.length <= 160 ? text : '' };
+        last = node;
+      }
+      if (node.matches('td,th,dd')) {
+        const prev = node.previousElementSibling;
+        const text = prev && !hasOtherFields(prev, new Set()) ? textAround(prev, []) : '';
+        if (text && text.length <= 160) return { text };
+      }
+      if (crowded) break;
+    }
+    return { text: '', last };
+  }
+
+  function labelledBy(el) {
+    const ids = (el.getAttribute('aria-labelledby') || '').split(/\s+/).filter(Boolean);
+    return clean(ids.map((id) => document.getElementById(id)?.textContent || '').join(' '));
+  }
+
+  function labelOf(el, members) {
+    if (members.length === 1) {
+      const direct = clean(el.getAttribute('aria-label')) || labelledBy(el);
+      if (direct) return direct;
+      const label = el.labels?.[0];
+      const text = label && textAround(label, [el]);
+      if (text) return text;
+    }
+    // The field's own placeholder is firmer evidence than loose text that merely precedes it.
+    const context = contextLabel(members);
+    return context.text || clean(el.getAttribute('placeholder')) || (context.last && precedingText(context.last)) ||
+      clean(el.getAttribute('title')) || pretty(el.getAttribute('name') || el.id) || el.tagName.toLowerCase();
+  }
+
+  // The caption of one radio / checkbox inside a group.
+  function optionText(el) {
+    const label = el.labels?.[0];
+    return clean(el.getAttribute('aria-label')) || (label && textAround(label, [el])) ||
+      (el.nextSibling?.nodeType === Node.TEXT_NODE && clean(el.nextSibling.nodeValue)) ||
+      clean(el.textContent) || clean(el.value);
+  }
+
+  // ---------- selectors ----------
+
+  function isUnique(root, selector, el) {
+    try {
+      const found = root.querySelectorAll(selector);
+      return found.length === 1 && found[0] === el;
+    } catch { return false; }
+  }
+
+  function pathSelector(el, root) {
+    const parts = [];
+    for (let n = el; n && n.nodeType === Node.ELEMENT_NODE; n = n.parentElement) {
+      const tag = n.tagName.toLowerCase();
+      if (tag === 'body' || tag === 'html') { parts.unshift(tag); break; }
+      if (n !== el && n.id && !AUTO_ID.test(n.id) && isUnique(root, '#' + CSS.escape(n.id), n)) {
+        parts.unshift('#' + CSS.escape(n.id));
+        break;
+      }
+      const same = [...n.parentNode.children].filter((c) => c.tagName === n.tagName);
+      parts.unshift(same.length > 1 ? `${tag}:nth-of-type(${same.indexOf(n) + 1})` : tag);
+    }
+    return parts.join(' > ');
+  }
+
+  // Prefers the most stable handle: id, then name, then test/data attributes, then a DOM path.
+  function localSelector(el, root) {
+    const tag = el.tagName.toLowerCase();
+    const name = el.getAttribute('name');
+    const tries = [];
+    if (el.id && !AUTO_ID.test(el.id)) tries.push('#' + CSS.escape(el.id));
+    if (name) tries.push(`${tag}[name=${quote(name)}]`);
+    for (const attr of [...STABLE_ATTRS, 'aria-label', 'placeholder']) {
+      const v = el.getAttribute(attr);
+      if (v) tries.push(`${tag}[${attr}=${quote(v)}]`);
+    }
+    if (name && el.form?.id && !AUTO_ID.test(el.form.id)) tries.push(`#${CSS.escape(el.form.id)} ${tag}[name=${quote(name)}]`);
+    return tries.find((s) => isUnique(root, s, el)) || pathSelector(el, root);
+  }
+
+  // Elements inside shadow DOM get "host >>> inner", the same idea as DevTools' "Copy JS path".
+  const withHost = (root, local) => (root instanceof ShadowRoot ? selectorFor(root.host) + ' >>> ' + local : local);
+
+  function selectorFor(el) {
+    const root = el.getRootNode();
+    return withHost(root, localSelector(el, root));
+  }
+
+  function groupSelector(el, members) {
+    const root = el.getRootNode();
+    if (el.tagName === 'INPUT' && (members.length > 1 || el.type === 'radio') && el.name) {
+      const base = `input[type="${el.type}"][name=${quote(el.name)}]`;
+      const clash = root.querySelectorAll(base).length > members.length && el.form?.id;
+      return withHost(root, clash ? `#${CSS.escape(el.form.id)} ${base}` : base);
+    }
+    if (members.length > 1) return selectorFor(el.closest('[role="radiogroup"]')) + ' [role="radio"]';
+    return selectorFor(el);
+  }
+
+  function queryAll(root, selector) {
+    try { return [...root.querySelectorAll(selector)]; } catch { return []; }
+  }
+
+  // Accepts whatever the user pasted: a CSS selector, an XPath, "host >>> inner", or a bare id / name / class.
+  function resolve(locator) {
+    const s = clean(locator);
+    if (!s) return [];
+    if (/^\(*\.?\//.test(s)) {
+      try {
+        const snap = document.evaluate(s, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+        return Array.from({ length: snap.snapshotLength }, (_, i) => snap.snapshotItem(i)).filter((n) => n.nodeType === Node.ELEMENT_NODE);
+      } catch { return []; }
+    }
+    const steps = s.split('>>>').map(clean);
+    let roots = [document];
+    for (const step of steps.slice(0, -1)) roots = roots.flatMap((r) => queryAll(r, step)).map(shadowOf).filter(Boolean);
+    const found = roots.flatMap((r) => queryAll(r, steps.at(-1)));
+    if (found.length || steps.length > 1 || !/^[\w\-.:[\]]+$/.test(s)) return found;
+    return [document.getElementById(s), ...document.getElementsByName(s), ...document.getElementsByClassName(s)].filter(Boolean);
+  }
+
+  // Maps whatever was matched onto the real field: the styled Select2 box maps to its hidden
+  // <select>, a <label> to its control, a wrapper to the field inside it.
+  function toField(el) {
+    if (kindOf(el) && !isWidgetPart(el)) return el;
+    const widget = el.closest(WIDGETS);
+    if (widget) {
+      const byId = widget.id?.startsWith('s2id_') ? document.getElementById(widget.id.slice(5)) : null;
+      const select = [byId, widget.previousElementSibling, widget.nextElementSibling].find((x) => x?.tagName === 'SELECT');
+      if (select) return select;
+    }
+    const control = el.closest('label')?.control;
+    return control || [...el.querySelectorAll(CANDIDATES)].find(isField) || el;
+  }
+
+  const fieldsFor = (selector) => [...new Set(resolve(selector).map(toField))];
+
+  // ---------- scan ----------
+
+  function describe(el, members = groupOf(el)) {
+    const kind = members.length > 1 && kindOf(el) === 'check' ? 'multi' : kindOf(el);
+    const field = {
+      label: tidyLabel(labelOf(el, members)),
+      selector: groupSelector(el, members),
+      kind,
+      frame: FRAME,
+      required: members.some((m) => m.required || m.getAttribute('aria-required') === 'true'),
+      hint: el.getAttribute('name') || el.id || '',
+    };
+    if (el.tagName === 'SELECT') {
+      field.options = [...el.options].filter((o) => o.value !== '' && !o.disabled).slice(0, 500)
+        .map((o) => ({ value: o.value, text: clean(o.textContent) || o.value }));
+      field.current = el.multiple ? [...el.selectedOptions].map((o) => o.value).filter(Boolean) : el.value;
+    } else if (kind === 'radio' || kind === 'multi') {
+      field.options = members.map((m) => ({ value: m.value || '', text: optionText(m) }));
+      // Radios that all post "on", or share a value, can only be told apart by their caption.
+      const values = field.options.map((o) => o.value);
+      if (values.some((v) => !v || v === 'on') || new Set(values).size < values.length) field.options.forEach((o) => { o.value = o.text; });
+      const on = field.options.filter((_, i) => isChecked(members[i])).map((o) => o.value);
+      field.current = kind === 'radio' ? on[0] || '' : on;
+    } else if (kind === 'check') {
+      field.current = isChecked(el) ? 'true' : '';
+    } else if (kind === 'text') {
+      field.inputType = el.tagName === 'INPUT' ? el.type : 'text';
+      field.multiline = el.tagName !== 'INPUT';
+      field.current = field.inputType === 'password' ? '' : 'value' in el ? el.value : clean(el.innerText);
+    }
+    return field;
+  }
+
+  function scan({ includeHidden } = {}) {
+    const seen = new Set();
+    const fields = [];
+    for (const el of deepAll(document, CANDIDATES)) {
+      if (seen.has(el) || !isField(el) || el.parentElement?.isContentEditable) continue;
+      const members = groupOf(el);
+      members.forEach((m) => seen.add(m));
+      if (!includeHidden && !members.some(isVisible)) continue;
+      fields.push(describe(el, members));
+    }
+    // Two fields sharing a caption (e.g. salutation + first name in one cell) get their name appended.
+    const count = {};
+    for (const f of fields) count[f.label] = (count[f.label] || 0) + 1;
+    for (const f of fields) {
+      if (count[f.label] > 1 && f.hint) f.label += ` (${f.hint})`;
+      delete f.hint;
+    }
+    return { frame: FRAME, fields };
+  }
+
+  // ---------- fill ----------
+
+  const fire = (el, type) => el.dispatchEvent(new Event(type, { bubbles: true }));
+  const done = (el) => ({ status: 'filled', el });
+  const fail = (detail, status = 'error') => ({ status, detail });
+
+  // Full pointer sequence, for custom widgets that open on mousedown / pointerdown rather than click.
+  function press(el) {
+    for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup']) {
+      const Ctor = type.startsWith('pointer') ? PointerEvent : MouseEvent;
+      el.dispatchEvent(new Ctor(type, { bubbles: true, cancelable: true, composed: true, view: window }));
+    }
+    el.click();
+  }
+
+  function setChecked(el, want) {
+    if (isChecked(el) === want) return;
+    if (el.tagName === 'INPUT') el.click(); else press(el);
+  }
+
+  function formatDate(date, format) {
+    const pad = (n) => String(n).padStart(2, '0');
+    const parts = { yyyy: date.getFullYear(), yy: pad(date.getFullYear() % 100), mm: pad(date.getMonth() + 1), m: date.getMonth() + 1, dd: pad(date.getDate()), d: date.getDate() };
+    return format.replace(/yyyy|yy|mm|m|dd|d/gi, (token) => parts[token.toLowerCase()]);
+  }
+
+  // {{clear}} empties the field. {{today}}, {{today+7}}, {{today:dd/mm/yyyy}} insert a date,
+  // defaulting to the format the field itself declares (vtiger: data-date-format).
+  function expand(value, el) {
+    return value.replace(/\{\{\s*clear\s*\}\}/gi, '').replace(/\{\{\s*today\s*([+-]\s*\d+)?\s*(?::\s*([^}]+?))?\s*\}\}/gi, (_, shift, format) => {
+      const date = new Date();
+      if (shift) date.setDate(date.getDate() + Number(shift.replace(/\s/g, '')));
+      return formatDate(date, format || el.dataset?.dateFormat || 'yyyy-mm-dd');
+    });
+  }
+
+  function fillText(el, value) {
+    if (el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA') {
+      // Rich-text editors only notice edits that come through the editing pipeline.
+      el.focus();
+      getSelection().selectAllChildren(el);
+      if (!document.execCommand('insertText', false, value)) {
+        el.textContent = value;
+        fire(el, 'input');
+      }
+      return done(el);
+    }
+    if (el.type === 'date' && value && !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+      const parsed = new Date(value);
+      if (!isNaN(parsed)) value = formatDate(parsed, 'yyyy-mm-dd');
+    }
+    // The prototype setter bypasses React/Vue value tracking, so their change handlers still run.
+    const proto = el.tagName === 'INPUT' ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype;
+    Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, value);
+    el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: value }));
+    el.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
+    fire(el, 'change');
+    el.dispatchEvent(new FocusEvent('blur'));
+    el.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
+    if (value !== '' && el.value === '') return fail('The field rejected this value (check the format)');
+    return done(el);
+  }
+
+  function matchOption(options, wanted) {
+    const w = norm(wanted);
+    return options.find((o) => o.value === wanted) || options.find((o) => norm(o.textContent) === w) ||
+      options.find((o) => norm(o.value) === w) || (w && options.find((o) => norm(o.textContent).startsWith(w))) ||
+      (w && options.find((o) => norm(o.textContent).includes(w))) || null;
+  }
+
+  function fillSelect(el, value) {
+    const options = [...el.options];
+    let missing = [];
+    if (el.multiple) {
+      const wanted = asList(value);
+      const hits = wanted.map((w) => matchOption(options, w));
+      missing = wanted.filter((_, i) => !hits[i]);
+      options.forEach((o) => { o.selected = hits.includes(o); });
+    } else {
+      const wanted = expand(asText(value), el);
+      const hit = matchOption(options, wanted);
+      if (!hit) return fail(`No option “${wanted}” in this list`, 'nooption');
+      hit.selected = true;
+    }
+    fire(el, 'input');
+    fire(el, 'change');
+    // Chosen needs to be told; Select2 follows the change event, with a manual repaint as a safety net.
+    el.dispatchEvent(new Event('chosen:updated'));
+    el.dispatchEvent(new Event('liszt:updated'));
+    const shown = !el.multiple && widgetOf(el)?.querySelector('.select2-chosen');
+    const text = clean(el.selectedOptions[0]?.textContent);
+    if (shown && clean(shown.textContent) !== text) {
+      shown.textContent = text;
+      shown.closest('.select2-default')?.classList.remove('select2-default');
+    }
+    return missing.length ? fail(`No option “${missing.join('”, “')}” in this list`, 'nooption') : done(el);
+  }
+
+  // Radio groups pick one member; checkbox groups end up with exactly the listed members ticked.
+  function fillChoice(members, wanted, single) {
+    const want = wanted.map(norm);
+    const hits = new Set();
+    for (const m of members) {
+      const key = [norm(m.value), norm(optionText(m))].find((k) => k && want.includes(k));
+      if (key) hits.add(key);
+      if (key) setChecked(m, true); else if (!single) setChecked(m, false);
+      if (key && single) break;
+    }
+    const missing = wanted.filter((w) => !hits.has(norm(w)));
+    return missing.length ? fail(`No option “${missing.join('”, “')}” here`, 'nooption') : done(members[0]);
+  }
+
+  // Best effort for custom dropdowns (MUI, Radix, Ant...): open it, then click the matching option.
+  async function fillCombo(el, value) {
+    const OPTIONS = '[role="option"],[role="listbox"] li,[role="menuitem"]';
+    press(el);
+    const want = norm(value);
+    for (let waited = 0; waited <= 1500; waited += 100) {
+      const options = deepAll(document, OPTIONS).filter(rendered);
+      const hit = options.find((o) => norm(o.textContent) === want) || options.find((o) => norm(o.textContent).startsWith(want));
+      if (hit) { press(hit); return done(el); }
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    return fail(`No option “${value}” appeared`, 'nooption');
+  }
+
+  async function fillOne(f) {
+    const els = fieldsFor(f.selector);
+    if (!els.length) return { status: 'notfound' };
+    const el = els[0];
+    const kind = kindOf(el);
+    if (!kind) return fail(`<${el.tagName.toLowerCase()}> is not a fillable field`);
+    if (el.disabled) return fail('This field is disabled on the page');
+    const members = els.length > 1 ? els : groupOf(el);
+    const flag = Array.isArray(f.value) ? undefined : YES.has(norm(f.value)) ? true : NO.has(norm(f.value)) ? false : undefined;
+    let result;
+    if (el.tagName === 'SELECT') result = fillSelect(el, f.value);
+    else if (kind === 'check' && flag !== undefined) { els.forEach((e) => setChecked(e, flag)); result = done(el); }
+    else if (kind === 'check') result = fillChoice(members, asList(f.value), false);
+    else if (kind === 'radio' && flag === true && members.length === 1) { setChecked(el, true); result = done(el); }
+    else if (kind === 'radio') result = fillChoice(members, [asText(f.value)], true);
+    else if (kind === 'combo') result = await fillCombo(el, asText(f.value));
+    else result = fillText(el, expand(asText(f.value), el));
+    if (result.status === 'filled') flash(result.el, OK_COLOR);
+    return { status: result.status, detail: result.detail };
+  }
+
+  async function fill({ fields }) {
+    const results = [];
+    for (const f of fields) {
+      if (f.frame && f.frame !== 'any' && f.frame !== FRAME) { results.push({ id: f.id, status: 'otherframe' }); continue; }
+      try { results.push({ id: f.id, ...(await fillOne(f)) }); }
+      catch (e) { results.push({ id: f.id, status: 'error', detail: String(e?.message || e) }); }
+    }
+    return results;
+  }
+
+  // ---------- highlight + picker ----------
+
+  const flashing = new WeakMap();
+
+  // A hidden <select> or checkbox is shown through its visible stand-in.
+  const visibleProxy = (el) => (rendered(el) ? el : widgetOf(el) || el.labels?.[0] || el.parentElement || el);
+
+  function flash(el, color) {
+    const target = visibleProxy(el);
+    if (!flashing.has(target)) flashing.set(target, [target.style.outline, target.style.outlineOffset]);
+    target.style.outline = `2px solid ${color}`;
+    target.style.outlineOffset = '1px';
+    clearTimeout(target.__pfTimer);
+    target.__pfTimer = setTimeout(() => {
+      [target.style.outline, target.style.outlineOffset] = flashing.get(target);
+      flashing.delete(target);
+    }, 1500);
+  }
+
+  // Shows where a selector points and reports what kind of field it is.
+  function highlight({ selector, quiet }) {
+    const els = fieldsFor(selector);
+    if (!els.length) return { frame: FRAME, count: 0 };
+    if (!quiet) {
+      visibleProxy(els[0]).scrollIntoView({ block: 'center', behavior: 'smooth' });
+      els.forEach((el) => flash(el, PICK_COLOR));
+    }
+    const field = kindOf(els[0]) ? describe(els[0]) : null;
+    return { frame: FRAME, count: els.length, field };
+  }
+
+  let stopPicking = null;
+
+  function stopPicker() {
+    stopPicking?.();
+    stopPicking = null;
+  }
+
+  // Lets the user click a field on the page instead of copying a selector out of DevTools.
+  function startPicker() {
+    stopPicker();
+    const box = document.createElement('div');
+    box.style.cssText = `position:fixed;z-index:2147483647;pointer-events:none;display:none;border:2px solid ${PICK_COLOR};background:rgba(18,115,196,.15);border-radius:3px`;
+    document.documentElement.appendChild(box);
+    const send = (msg) => globalThis.chrome?.runtime?.sendMessage?.(msg)?.catch?.(() => {});
+    const targetOf = (e) => {
+      const first = e.composedPath()[0];
+      return toField(first instanceof Element ? first : e.target);
+    };
+    const block = (e) => { e.preventDefault(); e.stopImmediatePropagation(); };
+    const handlers = {
+      mousemove(e) {
+        const r = visibleProxy(targetOf(e)).getBoundingClientRect();
+        Object.assign(box.style, { display: 'block', left: r.left + 'px', top: r.top + 'px', width: r.width + 'px', height: r.height + 'px' });
+      },
+      click(e) {
+        block(e);
+        const el = targetOf(e);
+        stopPicker();
+        send({ type: 'pf-picked', field: kindOf(el) ? describe(el) : { selector: selectorFor(el), label: '', kind: 'text', frame: FRAME } });
+      },
+      keydown(e) {
+        if (e.key !== 'Escape') return;
+        block(e);
+        stopPicker();
+        send({ type: 'pf-pick-cancel' });
+      },
+      mousedown: block, mouseup: block, pointerdown: block, pointerup: block,
+    };
+    for (const [type, fn] of Object.entries(handlers)) window.addEventListener(type, fn, true);
+    stopPicking = () => {
+      for (const [type, fn] of Object.entries(handlers)) window.removeEventListener(type, fn, true);
+      box.remove();
+    };
+  }
+
+  window.__powerfill = { scan, fill, highlight, startPicker, stopPicker };
+})();

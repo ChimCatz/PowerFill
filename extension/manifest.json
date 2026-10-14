@@ -1,0 +1,36 @@
+{
+  "manifest_version": 3,
+  "name": "PowerFill",
+  "version": "1.0.0",
+  "description": "Scan a page's form fields, save the values as a profile, and fill the form in one click.",
+  "minimum_chrome_version": "116",
+  "permissions": ["storage", "scripting", "sidePanel"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "PowerFill",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png"
+    }
+  },
+  "side_panel": {
+    "default_path": "panel/panel.html"
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "commands": {
+    "fill-page": {
+      "suggested_key": { "default": "Alt+Shift+F" },
+      "description": "Fill this page with its most recently used profile"
+    }
+  }
+}

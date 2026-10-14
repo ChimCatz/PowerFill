@@ -1,0 +1,24 @@
+# Saved copies of real pages used for testing. They contain internal data and
+# must never be published. (The extension's own HTML lives under extension/.)
+/*.html
+/samples/
+
+# Exported PowerFill profiles hold the values people fill in
+powerfill-*.json
+
+# Packaged builds and the extension's private signing key
+*.zip
+*.crx
+*.pem
+
+# Test tooling
+node_modules/
+tests/shots/
+
+# Windows, macOS and editor clutter
+Thumbs.db
+desktop.ini
+.DS_Store
+.vscode/
+.idea/
+.claude/
